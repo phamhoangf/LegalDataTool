@@ -72,7 +72,7 @@ DataTool/
 └── README.md              # This file
 ```
 
-## 🚀 Sử dụng
+## Sử dụng
 
 ### Bước 1: Test Google AI
 ```bash
