@@ -1,0 +1,4 @@
+[{"instruction": "Độ tuổi tối thiểu để thi giấy phép lái xe hạng A1 là bao nhiêu?", "output": "Theo Luật Giao thông đường bộ 2008, độ tuổi tối thiểu để được cấp giấy phép lái xe hạng A1 là đủ 18 tuổi."},
+{"instruction": "Giấy phép lái xe hạng A1 dùng để lái loại xe nào?", "output": "Giấy phép lái xe hạng A1 dùng để lái xe mô tô có dung tích xi-lanh từ 50 cm3 đến dưới 175 cm3."},
+{"instruction": "Khác biệt giữa GPLX hạng A1 và A2 là gì?", "output": "GPLX hạng A1 dành cho xe mô tô 50-175 cm3, yêu cầu từ 18 tuổi. GPLX hạng A2 dành cho xe mô tô từ 175 cm3 trở lên, yêu cầu từ 20 tuổi và có thể lái cả loại xe hạng A1."}
+]

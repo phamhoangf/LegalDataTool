@@ -50,7 +50,7 @@ class DataGenerator:
                 model=self.model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    # thinking_config=types.ThinkingConfig(thinking_budget=0),
                     temperature=0.7,
                     max_output_tokens=4000
                 )
@@ -105,7 +105,6 @@ class DataGenerator:
                 model=self.model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
                     temperature=0.7,
                     max_output_tokens=4000
                 )
@@ -157,7 +156,6 @@ class DataGenerator:
                 model=self.model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
                     temperature=0.8,
                     max_output_tokens=4000
                 )

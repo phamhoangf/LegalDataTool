@@ -46,12 +46,20 @@ const DataGeneration = () => {
     try {
       setLoading(true);
       const response = await apiService.getTopics();
-      // Chỉ hiển thị topics có văn bản để sinh dữ liệu
-      const topicsWithText = response.data.filter(topic => topic.legal_text);
-      setTopics(topicsWithText);
       
-      if (response.data.length > topicsWithText.length) {
-        message.info(`Có ${response.data.length - topicsWithText.length} chủ đề chưa có văn bản luật`);
+      // Filter topics có documents hoặc legal_text
+      const readyTopics = response.data.filter(topic => 
+        (topic.document_count && topic.document_count > 0) || 
+        (topic.legal_text && topic.legal_text.trim().length > 0)
+      );
+      
+      setTopics(readyTopics);
+      
+      if (response.data.length > readyTopics.length) {
+        const missingCount = response.data.length - readyTopics.length;
+        message.info(
+          `Có ${missingCount} chủ đề chưa có tài liệu. Hãy thêm tài liệu ở trang "Quản lý Chủ đề" trước khi sinh dữ liệu.`
+        );
       }
     } catch (error) {
       message.error('Không thể tải danh sách chủ đề');
@@ -181,7 +189,7 @@ const DataGeneration = () => {
               Chọn Chủ Đề:
             </label>
             <Select
-              placeholder="Chọn chủ đề có văn bản luật"
+              placeholder="Chọn chủ đề có tài liệu"
               style={{ width: '100%' }}
               value={selectedTopic}
               onChange={setSelectedTopic}
@@ -189,10 +197,47 @@ const DataGeneration = () => {
             >
               {topics.map(topic => (
                 <Option key={topic.id} value={topic.id}>
-                  {topic.name} - {topic.description}
+                  <div>
+                    <div><strong>{topic.name}</strong></div>
+                    <div style={{ fontSize: '12px', color: '#666' }}>
+                      {topic.document_count > 0 
+                        ? `${topic.document_count} tài liệu` 
+                        : 'Văn bản trực tiếp'
+                      } • {topic.description}
+                    </div>
+                  </div>
                 </Option>
               ))}
             </Select>
+            
+            {selectedTopic && (
+              <div style={{ 
+                marginTop: 8, 
+                padding: 12, 
+                background: '#f0f9ff', 
+                border: '1px solid #bae6fd', 
+                borderRadius: 6,
+                fontSize: '13px'
+              }}>
+                {(() => {
+                  const topic = topics.find(t => t.id === selectedTopic);
+                  return topic ? (
+                    <div>
+                      <strong>📑 Nguồn tài liệu:</strong>
+                      {topic.document_count > 0 ? (
+                        <div style={{ marginTop: 4 }}>
+                          {topic.documents.map(doc => (
+                            <div key={doc.id}>• {doc.title}</div>
+                          ))}
+                        </div>
+                      ) : (
+                        <span> Văn bản được nhập trực tiếp</span>
+                      )}
+                    </div>
+                  ) : null;
+                })()}
+              </div>
+            )}
           </div>
 
           {/* Chọn loại dữ liệu */}

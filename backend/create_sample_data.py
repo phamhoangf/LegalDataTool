@@ -4,7 +4,7 @@ Script tạo dữ liệu mẫu để test hệ thống sử dụng Google AI
 import os
 from dotenv import load_dotenv
 from app import app, db
-from models import LegalTopic, GeneratedData, LabeledData
+from models import LegalTopic, LegalDocument, TopicDocument, GeneratedData, LabeledData
 import json
 
 def create_sample_data():
@@ -12,14 +12,23 @@ def create_sample_data():
     load_dotenv()
     
     with app.app_context():
-        # Tạo database tables
+        # Xóa tất cả tables cũ và tạo lại
+        db.drop_all()
         db.create_all()
         
         # Tạo chủ đề mẫu
         sample_topic = LegalTopic(
             name="Giấy phép lái xe",
-            description="Quy định về giấy phép lái xe các loại phương tiện",
-            legal_text="""
+            description="Quy định về giấy phép lái xe các loại phương tiện"
+        )
+        
+        db.session.add(sample_topic)
+        db.session.flush()  # Để có ID
+        
+        # Tạo document mẫu
+        sample_document = LegalDocument(
+            title="Luật Giao thông đường bộ 2008 - Điều 60",
+            content="""
             LUẬT GIAO THÔNG ĐƯỜNG BỘ 2008
             
             Điều 60. Giấy phép lái xe
@@ -35,10 +44,24 @@ def create_sample_data():
             a) Hạng A1: đủ 18 tuổi;
             b) Hạng A2: đủ 20 tuổi;
             c) Hạng B1: đủ 18 tuổi;
-            """
+            """,
+            document_type="law",
+            document_number="13/2008/QH12",
+            uploaded_by="system"
         )
         
-        db.session.add(sample_topic)
+        db.session.add(sample_document)
+        db.session.flush()  # Để có ID
+        
+        # Liên kết topic với document
+        topic_doc = TopicDocument(
+            topic_id=sample_topic.id,
+            document_id=sample_document.id,
+            relevance_score=1.0,
+            added_by="system"
+        )
+        
+        db.session.add(topic_doc)
         db.session.commit()
         
         # Tạo dữ liệu SFT mẫu
