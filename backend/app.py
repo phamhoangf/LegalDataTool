@@ -117,14 +117,32 @@ def delete_topic(topic_id):
 def get_documents():
     """Lấy danh sách tài liệu"""
     documents = LegalDocument.query.all()
-    return jsonify([{
-        'id': doc.id,
-        'title': doc.title,
-        'document_type': doc.document_type,
-        'document_number': doc.document_number,
-        'uploaded_at': doc.uploaded_at.isoformat(),
-        'content_length': len(doc.content)
-    } for doc in documents])
+    result = []
+    
+    for doc in documents:
+        # Lấy các topic liên kết
+        topic_docs = TopicDocument.query.filter_by(document_id=doc.id).all()
+        topics = []
+        for td in topic_docs:
+            topic = LegalTopic.query.get(td.topic_id)
+            if topic:
+                topics.append({
+                    'id': topic.id,
+                    'name': topic.name
+                })
+        
+        result.append({
+            'id': doc.id,
+            'title': doc.title,
+            'content': doc.content,
+            'document_type': doc.document_type,
+            'document_number': doc.document_number,
+            'uploaded_at': doc.uploaded_at.isoformat(),
+            'created_at': doc.uploaded_at.isoformat(),
+            'topics': topics
+        })
+    
+    return jsonify(result)
 
 @app.route('/api/documents', methods=['POST'])
 def create_document():
