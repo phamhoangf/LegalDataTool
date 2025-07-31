@@ -150,6 +150,51 @@ const DataLabeling = () => {
     const content = typeof item.content === 'string' ? JSON.parse(item.content) : item.content;
     
     switch (item.data_type) {
+      case 'word_matching':
+        return (
+          <div className="data-item">
+            <div className="instruction-text">
+              <strong>Question:</strong> {content.question}
+            </div>
+            <div className="output-text">
+              <strong>Answer:</strong> {content.answer}
+            </div>
+          </div>
+        );
+      case 'concept_understanding':
+        return (
+          <div className="data-item">
+            <div className="instruction-text">
+              <strong>Question:</strong> {content.question}
+            </div>
+            <div className="output-text">
+              <strong>Answer:</strong> {content.answer}
+            </div>
+          </div>
+        );
+      case 'multi_paragraph_reading':
+        return (
+          <div className="data-item">
+            <div className="instruction-text">
+              <strong>Question:</strong> {content.question}
+            </div>
+            <div className="output-text">
+              <strong>Answer:</strong> {content.answer}
+            </div>
+          </div>
+        );
+      case 'multi_hop_reasoning':
+        return (
+          <div className="data-item">
+            <div className="instruction-text">
+              <strong>Question:</strong> {content.question}
+            </div>
+            <div className="output-text">
+              <strong>Answer:</strong> {content.answer}
+            </div>
+          </div>
+        );
+      // Legacy support cho format cũ
       case 'sft':
         return (
           <div className="data-item">
@@ -202,7 +247,7 @@ const DataLabeling = () => {
           </div>
         );
       default:
-        return <pre>{JSON.stringify(content, null, 2)}</pre>;
+        return <pre style={{whiteSpace: 'pre-wrap', wordWrap: 'break-word'}}>{JSON.stringify(content, null, 2)}</pre>;
     }
   };
 
@@ -214,6 +259,50 @@ const DataLabeling = () => {
       : selectedItem.content;
 
     switch (selectedItem.data_type) {
+      case 'word_matching':
+        return (
+          <div>
+            <Form.Item name={['modified_content', 'question']} label="Question">
+              <TextArea rows={2} defaultValue={content.question} />
+            </Form.Item>
+            <Form.Item name={['modified_content', 'answer']} label="Answer">
+              <TextArea rows={3} defaultValue={content.answer} />
+            </Form.Item>
+          </div>
+        );
+      case 'concept_understanding':
+        return (
+          <div>
+            <Form.Item name={['modified_content', 'question']} label="Question">
+              <TextArea rows={2} defaultValue={content.question} />
+            </Form.Item>
+            <Form.Item name={['modified_content', 'answer']} label="Answer">
+              <TextArea rows={3} defaultValue={content.answer} />
+            </Form.Item>
+          </div>
+        );
+      case 'multi_paragraph_reading':
+        return (
+          <div>
+            <Form.Item name={['modified_content', 'question']} label="Question">
+              <TextArea rows={2} defaultValue={content.question} />
+            </Form.Item>
+            <Form.Item name={['modified_content', 'answer']} label="Answer">
+              <TextArea rows={3} defaultValue={content.answer} />
+            </Form.Item>
+          </div>
+        );
+      case 'multi_hop_reasoning':
+        return (
+          <div>
+            <Form.Item name={['modified_content', 'question']} label="Question">
+              <TextArea rows={2} defaultValue={content.question} />
+            </Form.Item>
+            <Form.Item name={['modified_content', 'answer']} label="Answer">
+              <TextArea rows={4} defaultValue={content.answer} />
+            </Form.Item>
+          </div>
+        );
       case 'sft':
         return (
           <div>
@@ -264,7 +353,15 @@ const DataLabeling = () => {
           </div>
         );
       default:
-        return null;
+        return (
+          <Form.Item name="modified_content" label="Modified Content">
+            <TextArea 
+              rows={8} 
+              defaultValue={JSON.stringify(content, null, 2)}
+              placeholder="Edit as JSON..."
+            />
+          </Form.Item>
+        );
     }
   };
 
@@ -323,14 +420,15 @@ const DataLabeling = () => {
           <div>
             <label>Loại dữ liệu:</label>
             <Select
-              style={{ width: 120, marginLeft: 8 }}
+              style={{ width: 180, marginLeft: 8 }}
               value={filterDataType}
               onChange={setFilterDataType}
             >
               <Option value="all">Tất cả</Option>
-              <Option value="sft">SFT</Option>
-              <Option value="cot">CoT</Option>
-              <Option value="rlhf">RLHF</Option>
+              <Option value="word_matching">Word Matching</Option>
+              <Option value="concept_understanding">Concept Understanding</Option>
+              <Option value="multi_paragraph_reading">Multi-Paragraph Reading</Option>
+              <Option value="multi_hop_reasoning">Multi-Hop Reasoning</Option>
             </Select>
           </div>
         </Space>
@@ -443,7 +541,12 @@ const DataLabeling = () => {
               message="Dữ liệu gốc"
               description={renderDataContent(selectedItem)}
               type="info"
-              style={{ marginBottom: 16 }}
+              style={{ 
+                marginBottom: 16,
+                wordWrap: 'break-word',
+                overflowWrap: 'break-word',
+                whiteSpace: 'pre-wrap'
+              }}
             />
 
             <Form.Item
@@ -492,6 +595,11 @@ const DataLabeling = () => {
 
 const getDataTypeColor = (type) => {
   switch (type) {
+    case 'word_matching': return 'blue';
+    case 'concept_understanding': return 'purple';
+    case 'multi_paragraph_reading': return 'orange';
+    case 'multi_hop_reasoning': return 'red';
+    // Legacy support
     case 'sft': return 'blue';
     case 'cot': return 'purple';
     case 'rlhf': return 'orange';

@@ -4,6 +4,7 @@ import { Layout, Menu } from 'antd';
 import {
   HomeOutlined,
   FolderOutlined,
+  FileTextOutlined,
   DatabaseOutlined,
   TagsOutlined,
   BarChartOutlined,
@@ -13,6 +14,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 
 import HomePage from './components/HomePage';
 import TopicManagement from './components/TopicManagement';
+import DocumentManagement from './components/DocumentManagement';
 import DataGeneration from './components/DataGeneration';
 import DataLabeling from './components/DataLabeling';
 import Statistics from './components/Statistics';
@@ -36,6 +38,11 @@ function App() {
       key: '/topics',
       icon: <FolderOutlined />,
       label: 'Quản lý chủ đề',
+    },
+    {
+      key: '/documents',
+      icon: <FileTextOutlined />,
+      label: 'Quản lý tài liệu',
     },
     {
       key: '/generate',
@@ -88,6 +95,7 @@ function App() {
             <Routes>
               <Route path="/" element={<HomePage />} />
               <Route path="/topics" element={<TopicManagement />} />
+              <Route path="/documents" element={<DocumentManagement />} />
               <Route path="/generate" element={<DataGeneration />} />
               <Route path="/label" element={<DataLabeling />} />
               <Route path="/stats" element={<Statistics />} />

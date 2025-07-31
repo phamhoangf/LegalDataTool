@@ -6,7 +6,7 @@ import os
 from typing import List, Dict, Any
 
 class DataGenerator:
-    """Class sinh dữ liệu huấn luyện cho LegalSLM sử dụng Google Gemini AI"""
+    """Class sinh dữ liệu huấn luyện cho LegalSLM theo độ khó reasoning"""
     
     def __init__(self, api_key: str = None):
         # Set API key từ parameter hoặc environment variable
@@ -21,26 +21,29 @@ class DataGenerator:
         self.client = genai.Client()
         self.model = "gemini-2.0-flash-exp"
     
-    def generate_sft_data(self, legal_text: str, topic: str, num_samples: int = 10) -> List[Dict[str, Any]]:
-        """Sinh dữ liệu SFT (Supervised Fine-Tuning)"""
+    def generate_word_matching_data(self, legal_text: str, topic: str, num_samples: int = 10) -> List[Dict[str, Any]]:
+        """Sinh dữ liệu Word Matching - đơn giản nhất, chỉ cần tìm từ khóa trong văn bản"""
         
         prompt = f"""
         Dựa trên văn bản luật sau về chủ đề "{topic}":
         
-        {legal_text[:2000]}...
+        {legal_text}
         
-        Hãy tạo {num_samples} cặp instruction-output cho việc huấn luyện mô hình AI pháp lý.
+        Hãy tạo {num_samples} câu hỏi dạng Word Matching - đây là loại câu hỏi đơn giản nhất, chỉ cần tìm kiếm từ khóa/cụm từ trong văn bản.
         
         Yêu cầu:
-        - Instruction phải là câu hỏi thực tế về pháp luật
-        - Output phải chính xác, dựa trên văn bản luật
-        - Trả về format JSON array
+        - Câu hỏi có thể trả lời bằng cách tìm kiếm trực tiếp trong văn bản
+        - Không cần hiểu sâu về khái niệm pháp lý
+        - Thông tin cần thiết nằm rõ ràng trong văn bản
+        - MỖI CÂU HỎI PHẢI ĐỘC LẬP, KHÔNG ĐƯỢC DÙNG "luật này", "văn bản này" mà phải nói rõ tên luật/văn bản cụ thể
+        - Câu hỏi phải rõ ràng, người đọc không cần biết context trước
         
-        Format mong muốn:
+        Format mong muốn (CHỈ 3 TRƯỜNG):
         [
             {{
-                "instruction": "Câu hỏi về pháp luật",
-                "output": "Trả lời chính xác dựa trên luật"
+                "question": "Câu hỏi rõ ràng, độc lập, có tên luật cụ thể",
+                "answer": "Trả lời chính xác từ văn bản",
+                "difficulty": "word_matching"
             }}
         ]
         """
@@ -50,64 +53,161 @@ class DataGenerator:
                 model=self.model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    temperature=0.3,  # Thấp hơn để đảm bảo tính chính xác
+                    max_output_tokens=4000
+                )
+            )
+            
+            content = response.text
+            start_idx = content.find('[')
+            end_idx = content.rfind(']') + 1
+            
+            if start_idx != -1 and end_idx != -1:
+                json_str = content[start_idx:end_idx]
+                return json.loads(json_str)
+            else:
+                return self._generate_fallback_word_matching_data(topic, num_samples)
+                
+        except Exception as e:
+            print(f"Lỗi khi sinh Word Matching data: {e}")
+            return self._generate_fallback_word_matching_data(topic, num_samples)
+    
+    def generate_concept_understanding_data(self, legal_text: str, topic: str, num_samples: int = 10) -> List[Dict[str, Any]]:
+        """Sinh dữ liệu Concept Understanding - cần hiểu khái niệm pháp lý"""
+        
+        prompt = f"""
+        Dựa trên văn bản luật sau về chủ đề "{topic}":
+        
+        {legal_text}
+        
+        Hãy tạo {num_samples} câu hỏi dạng Concept Understanding - yêu cầu hiểu các khái niệm pháp lý để trả lời.
+        
+        Yêu cầu:
+        - Câu hỏi yêu cầu hiểu ý nghĩa của các thuật ngữ pháp lý
+        - Cần nắm được khái niệm để áp dụng vào tình huống cụ thể
+        - Không chỉ tìm từ khóa mà phải hiểu nghĩa sâu hơn
+        - MỖI CÂU HỎI PHẢI ĐỘC LẬP, KHÔNG ĐƯỢC DÙNG "luật này", "văn bản này" mà phải nói rõ tên luật/văn bản cụ thể
+        - Câu hỏi phải rõ ràng, người đọc không cần biết context trước
+        
+        Format mong muốn (CHỈ 3 TRƯỜNG):
+        [
+            {{
+                "question": "Câu hỏi rõ ràng yêu cầu hiểu khái niệm pháp lý, có tên luật cụ thể",
+                "answer": "Trả lời dựa trên hiểu biết về khái niệm",
+                "difficulty": "concept_understanding"
+            }}
+        ]
+        """
+        
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.5,
+                    max_output_tokens=4000
+                )
+            )
+            
+            content = response.text
+            start_idx = content.find('[')
+            end_idx = content.rfind(']') + 1
+            
+            if start_idx != -1 and end_idx != -1:
+                json_str = content[start_idx:end_idx]
+                return json.loads(json_str)
+            else:
+                return self._generate_fallback_concept_understanding_data(topic, num_samples)
+                
+        except Exception as e:
+            print(f"Lỗi khi sinh Concept Understanding data: {e}")
+            return self._generate_fallback_concept_understanding_data(topic, num_samples)
+    
+    def generate_multi_paragraph_reading_data(self, legal_text: str, topic: str, num_samples: int = 10) -> List[Dict[str, Any]]:
+        """Sinh dữ liệu Multi-Paragraph Reading - cần đọc nhiều đoạn để tập hợp thông tin"""
+        
+        prompt = f"""
+        Dựa trên văn bản luật sau về chủ đề "{topic}":
+        
+        {legal_text}
+        
+        Hãy tạo {num_samples} câu hỏi dạng Multi-Paragraph Reading - yêu cầu đọc và tổng hợp thông tin từ nhiều đoạn văn khác nhau.
+        
+        Yêu cầu:
+        - Câu hỏi không thể trả lời chỉ bằng một đoạn văn duy nhất
+        - Cần tập hợp thông tin từ 2-3 đoạn văn khác nhau
+        - Phải kết hợp các thông tin để đưa ra câu trả lời hoàn chỉnh
+        - MỖI CÂU HỎI PHẢI ĐỘC LẬP, KHÔNG ĐƯỢC DÙNG "luật này", "văn bản này" mà phải nói rõ tên luật/văn bản cụ thể
+        - Câu hỏi phải rõ ràng, người đọc không cần biết context trước
+        
+        Format mong muốn (CHỈ 3 TRƯỜNG):
+        [
+            {{
+                "question": "Câu hỏi rõ ràng cần đọc nhiều đoạn văn, có tên luật cụ thể",
+                "answer": "Trả lời tổng hợp từ nhiều nguồn",
+                "difficulty": "multi_paragraph_reading"
+            }}
+        ]
+        """
+        
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.6,
+                    max_output_tokens=4000
+                )
+            )
+            
+            content = response.text
+            start_idx = content.find('[')
+            end_idx = content.rfind(']') + 1
+            
+            if start_idx != -1 and end_idx != -1:
+                json_str = content[start_idx:end_idx]
+                return json.loads(json_str)
+            else:
+                return self._generate_fallback_multi_paragraph_data(topic, num_samples)
+                
+        except Exception as e:
+            print(f"Lỗi khi sinh Multi-Paragraph Reading data: {e}")
+            return self._generate_fallback_multi_paragraph_data(topic, num_samples)
+
+    def generate_multi_hop_reasoning_data(self, legal_text: str, topic: str, num_samples: int = 10) -> List[Dict[str, Any]]:
+        """Sinh dữ liệu Multi-Hop Reasoning - phức tạp nhất, cần nhiều bước suy luận logic"""
+        
+        prompt = f"""
+        Dựa trên văn bản luật sau về chủ đề "{topic}":
+        
+        {legal_text}
+        
+        Hãy tạo {num_samples} câu hỏi dạng Multi-Hop Reasoning - phức tạp nhất, yêu cầu nhiều bước suy luận logic.
+        
+        Yêu cầu:
+        - Câu hỏi cần nhiều bước suy luận logic để trả lời
+        - Phải kết hợp hiểu khái niệm + đọc nhiều đoạn + suy luận logic
+        - Quá trình reasoning phải rõ ràng và có thể giải thích được
+        - MỖI CÂU HỎI PHẢI ĐỘC LẬP, KHÔNG ĐƯỢC DÙNG "luật này", "văn bản này" mà phải nói rõ tên luật/văn bản cụ thể
+        - Câu hỏi phải rõ ràng, người đọc không cần biết context trước
+        
+        Format mong muốn (CHỈ 3 TRƯỜNG):
+        [
+            {{
+                "question": "Câu hỏi phức tạp cần suy luận nhiều bước, có tên luật cụ thể",
+                "answer": "Kết luận cuối cùng với giải thích quá trình suy luận",
+                "difficulty": "multi_hop_reasoning"
+            }}
+        ]
+        """
+        
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
                     temperature=0.7,
-                    max_output_tokens=4000
-                )
-            )
-            
-            content = response.text
-            # Tìm JSON trong response
-            start_idx = content.find('[')
-            end_idx = content.rfind(']') + 1
-            
-            if start_idx != -1 and end_idx != -1:
-                json_str = content[start_idx:end_idx]
-                return json.loads(json_str)
-            else:
-                return self._generate_fallback_sft_data(topic, num_samples)
-                
-        except Exception as e:
-            print(f"Lỗi khi sinh SFT data: {e}")
-            return self._generate_fallback_sft_data(topic, num_samples)
-    
-    def generate_cot_data(self, legal_text: str, topic: str, num_samples: int = 10) -> List[Dict[str, Any]]:
-        """Sinh dữ liệu CoT (Chain-of-Thought)"""
-        
-        prompt = f"""
-        Dựa trên văn bản luật sau về chủ đề "{topic}":
-        
-        {legal_text[:2000]}...
-        
-        Hãy tạo {num_samples} mẫu dữ liệu Chain-of-Thought cho việc huấn luyện mô hình AI pháp lý.
-        
-        Yêu cầu:
-        - Instruction là câu hỏi phức tạp cần suy luận
-        - Reasoning_steps là các bước suy luận rõ ràng
-        - Final_answer là kết luận cuối cùng
-        
-        Format mong muốn:
-        [
-            {{
-                "instruction": "Câu hỏi phức tạp về pháp luật",
-                "reasoning_steps": [
-                    "Bước 1: Xác định vấn đề...",
-                    "Bước 2: Áp dụng điều luật...",
-                    "Bước 3: Kết luận..."
-                ],
-                "final_answer": "Kết luận cuối cùng"
-            }}
-        ]
-        """
-        
-        try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
-                    temperature=0.7,
-                    max_output_tokens=4000
+                    max_output_tokens=5000
                 )
             )
             
@@ -119,78 +219,24 @@ class DataGenerator:
                 json_str = content[start_idx:end_idx]
                 return json.loads(json_str)
             else:
-                return self._generate_fallback_cot_data(topic, num_samples)
+                return self._generate_fallback_multi_hop_data(topic, num_samples)
                 
         except Exception as e:
-            print(f"Lỗi khi sinh CoT data: {e}")
-            return self._generate_fallback_cot_data(topic, num_samples)
+            print(f"Lỗi khi sinh Multi-Hop Reasoning data: {e}")
+            return self._generate_fallback_multi_hop_data(topic, num_samples)
     
-    def generate_rlhf_data(self, legal_text: str, topic: str, num_samples: int = 10) -> List[Dict[str, Any]]:
-        """Sinh dữ liệu RLHF (Reinforcement Learning from Human Feedback)"""
-        
-        prompt = f"""
-        Dựa trên văn bản luật sau về chủ đề "{topic}":
-        
-        {legal_text[:2000]}...
-        
-        Hãy tạo {num_samples} mẫu dữ liệu RLHF với 2 câu trả lời khác nhau cho mỗi prompt.
-        
-        Yêu cầu:
-        - Prompt là câu hỏi về tư vấn pháp luật
-        - Response_A tốt hơn Response_B (để human feedback chọn)
-        - Response_A: chính xác, đầy đủ, dễ hiểu
-        - Response_B: có thiếu sót hoặc không chính xác
-        
-        Format mong muốn:
-        [
-            {{
-                "prompt": "Câu hỏi tư vấn pháp luật",
-                "response_a": "Câu trả lời tốt, chính xác",
-                "response_b": "Câu trả lời kém hơn",
-                "preferred": "A"
-            }}
-        ]
-        """
-        
-        try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
-                    temperature=0.8,
-                    max_output_tokens=4000
-                )
-            )
-            
-            content = response.text
-            start_idx = content.find('[')
-            end_idx = content.rfind(']') + 1
-            
-            if start_idx != -1 and end_idx != -1:
-                json_str = content[start_idx:end_idx]
-                return json.loads(json_str)
-            else:
-                return self._generate_fallback_rlhf_data(topic, num_samples)
-                
-        except Exception as e:
-            print(f"Lỗi khi sinh RLHF data: {e}")
-            return self._generate_fallback_rlhf_data(topic, num_samples)
-    
-    def _generate_fallback_sft_data(self, topic: str, num_samples: int) -> List[Dict[str, Any]]:
-        """Tạo dữ liệu SFT mẫu khi API lỗi"""
+    def _generate_fallback_word_matching_data(self, topic: str, num_samples: int) -> List[Dict[str, Any]]:
+        """Tạo dữ liệu Word Matching mẫu khi API lỗi"""
         templates = [
             {
-                "instruction": f"Quy định về {topic} là gì?",
-                "output": f"Theo quy định pháp luật hiện hành về {topic}..."
+                "question": f"Theo Luật Giao thông đường bộ, {topic} là gì?",
+                "answer": f"Theo Luật Giao thông đường bộ, {topic} được quy định là...",
+                "difficulty": "word_matching"
             },
             {
-                "instruction": f"Thủ tục liên quan đến {topic} như thế nào?",
-                "output": f"Thủ tục {topic} bao gồm các bước sau..."
-            },
-            {
-                "instruction": f"Ai có thẩm quyền quyết định về {topic}?",
-                "output": f"Thẩm quyền về {topic} thuộc về..."
+                "question": f"Ai có thẩm quyền quyết định về {topic} theo quy định của pháp luật?",
+                "answer": f"Thẩm quyền về {topic} thuộc về cơ quan...",
+                "difficulty": "word_matching"
             }
         ]
         
@@ -198,37 +244,45 @@ class DataGenerator:
         for i in range(num_samples):
             template = templates[i % len(templates)]
             result.append({
-                "instruction": template["instruction"],
-                "output": template["output"] + f" (Mẫu {i+1})"
+                "question": template["question"],
+                "answer": template["answer"] + f" (Mẫu {i+1})",
+                "difficulty": template["difficulty"]
             })
         
         return result
     
-    def _generate_fallback_cot_data(self, topic: str, num_samples: int) -> List[Dict[str, Any]]:
-        """Tạo dữ liệu CoT mẫu khi API lỗi"""
+    def _generate_fallback_concept_understanding_data(self, topic: str, num_samples: int) -> List[Dict[str, Any]]:
+        """Tạo dữ liệu Concept Understanding mẫu khi API lỗi"""
         result = []
         for i in range(num_samples):
             result.append({
-                "instruction": f"Phân tích trường hợp {topic} số {i+1}",
-                "reasoning_steps": [
-                    f"Bước 1: Xác định vấn đề về {topic}",
-                    f"Bước 2: Áp dụng quy định pháp luật",
-                    f"Bước 3: Đưa ra kết luận"
-                ],
-                "final_answer": f"Kết luận về trường hợp {topic} này"
+                "question": f"Theo Luật Giao thông đường bộ, trong trường hợp nào thì hành vi liên quan đến {topic} được coi là vi phạm?",
+                "answer": f"Theo quy định của Luật Giao thông đường bộ, hành vi vi phạm về {topic} bao gồm các trường hợp...",
+                "difficulty": "concept_understanding"
             })
         
         return result
     
-    def _generate_fallback_rlhf_data(self, topic: str, num_samples: int) -> List[Dict[str, Any]]:
-        """Tạo dữ liệu RLHF mẫu khi API lỗi"""
+    def _generate_fallback_multi_paragraph_data(self, topic: str, num_samples: int) -> List[Dict[str, Any]]:
+        """Tạo dữ liệu Multi-Paragraph Reading mẫu khi API lỗi"""
         result = []
         for i in range(num_samples):
             result.append({
-                "prompt": f"Tư vấn về {topic} trong trường hợp {i+1}",
-                "response_a": f"Tư vấn chính xác và đầy đủ về {topic}",
-                "response_b": f"Tư vấn sơ sài về {topic}",
-                "preferred": "A"
+                "question": f"Theo Luật Giao thông đường bộ, quy trình hoàn chỉnh để xử lý vấn đề {topic} như thế nào?",
+                "answer": f"Theo quy định của Luật Giao thông đường bộ, quy trình xử lý {topic} bao gồm nhiều giai đoạn...",
+                "difficulty": "multi_paragraph_reading"
+            })
+        
+        return result
+    
+    def _generate_fallback_multi_hop_data(self, topic: str, num_samples: int) -> List[Dict[str, Any]]:
+        """Tạo dữ liệu Multi-Hop Reasoning mẫu khi API lỗi"""
+        result = []
+        for i in range(num_samples):
+            result.append({
+                "question": f"Theo Luật Giao thông đường bộ, phân tích tình huống phức tạp về {topic} và đưa ra giải pháp pháp lý phù hợp",
+                "answer": f"Kết luận về tình huống {topic}: Dựa trên việc xác định các khái niệm pháp lý liên quan, tìm hiểu quy định từ nhiều điều luật khác nhau, phân tích mối quan hệ giữa các quy định, và áp dụng logic pháp lý để kết luận...",
+                "difficulty": "multi_hop_reasoning"
             })
         
         return result
