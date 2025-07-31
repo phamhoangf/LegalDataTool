@@ -354,21 +354,38 @@ def generate_training_data():
     combined_legal_text = '\n\n'.join([doc.content for doc in documents])
     
     try:
-        # Sinh dữ liệu dựa trên loại
-        if data_type == 'sft':
-            generated_samples = data_generator.generate_sft_data(
+        # Sinh dữ liệu dựa trên loại reasoning
+        if data_type == 'word_matching':
+            generated_samples = data_generator.generate_word_matching_data(
+                combined_legal_text, topic.name, num_samples
+            )
+        elif data_type == 'concept_understanding':
+            generated_samples = data_generator.generate_concept_understanding_data(
+                combined_legal_text, topic.name, num_samples
+            )
+        elif data_type == 'multi_paragraph_reading':
+            generated_samples = data_generator.generate_multi_paragraph_reading_data(
+                combined_legal_text, topic.name, num_samples
+            )
+        elif data_type == 'multi_hop_reasoning':
+            generated_samples = data_generator.generate_multi_hop_reasoning_data(
+                combined_legal_text, topic.name, num_samples
+            )
+        # Backward compatibility với tên cũ
+        elif data_type == 'sft':
+            generated_samples = data_generator.generate_word_matching_data(
                 combined_legal_text, topic.name, num_samples
             )
         elif data_type == 'cot':
-            generated_samples = data_generator.generate_cot_data(
+            generated_samples = data_generator.generate_concept_understanding_data(
                 combined_legal_text, topic.name, num_samples
             )
         elif data_type == 'rlhf':
-            generated_samples = data_generator.generate_rlhf_data(
+            generated_samples = data_generator.generate_multi_hop_reasoning_data(
                 combined_legal_text, topic.name, num_samples
             )
         else:
-            return jsonify({'error': 'Loại dữ liệu không hợp lệ'}), 400
+            return jsonify({'error': 'Loại dữ liệu không hợp lệ. Sử dụng: word_matching, concept_understanding, multi_paragraph_reading, multi_hop_reasoning'}), 400
         
         # Lưu vào database
         for sample in generated_samples:

@@ -497,10 +497,10 @@ const TopicManagement = () => {
                 >
                   <Select
                     placeholder="Chọn tài liệu từ danh sách có sẵn"
-                    optionFilterProp="children"
+                    optionFilterProp="label"
                     showSearch
                     filterOption={(input, option) =>
-                      option.children.toLowerCase().indexOf(input.toLowerCase()) >= 0
+                      option.label.toLowerCase().indexOf(input.toLowerCase()) >= 0
                     }
                   >
                     {documents
@@ -510,7 +510,11 @@ const TopicManagement = () => {
                         return !isLinked;
                       })
                       .map(doc => (
-                        <Select.Option key={doc.id} value={doc.id}>
+                        <Select.Option 
+                          key={doc.id} 
+                          value={doc.id}
+                          label={doc.title}
+                        >
                           <div>
                             <strong>{doc.title}</strong>
                             <br />
