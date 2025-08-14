@@ -146,7 +146,7 @@ const HomePage = () => {
                 {
                   color: 'blue',
                   icon: <DatabaseOutlined />,
-                  children: 'Sinh dữ liệu huấn luyện (SFT, CoT, hoặc RLHF) dựa trên văn bản luật',
+                  children: 'Sinh dữ liệu huấn luyện (Word Matching, Concept Understanding, Multi Paragraph Reading, Multi Hop Reasoning) dựa trên văn bản luật',
                 },
                 {
                   color: 'purple',

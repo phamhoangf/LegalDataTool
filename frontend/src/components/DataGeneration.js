@@ -107,44 +107,25 @@ const DataGeneration = () => {
         return {
           title: 'Word Matching',
           description: 'Câu hỏi đơn giản có thể trả lời bằng tìm kiếm từ khóa trực tiếp trong văn bản',
-          example: 'Question: "Độ tuổi tối thiểu để thi GPLX hạng A1 là bao nhiêu?"\nAnswer: "18 tuổi"\nEvidence: "Điều 60: Hạng A1: đủ 18 tuổi"'
+          example: 'Question: "Độ tuổi tối thiểu để thi GPLX hạng A1 là bao nhiêu?"\nAnswer: "18 tuổi"'
         };
       case 'concept_understanding':
         return {
           title: 'Concept Understanding',
           description: 'Yêu cầu hiểu ý nghĩa các khái niệm và thuật ngữ pháp lý để trả lời',
-          example: 'Question: "Thế nào là vi phạm về GPLX?"\nAnswer: "Vi phạm bao gồm lái xe khi không có GPLX, GPLX hết hạn..."\nConcepts: ["vi phạm", "GPLX", "hành vi bị cấm"]'
+          example: 'Question: "Thế nào là vi phạm về GPLX?"\nAnswer: "Vi phạm bao gồm lái xe khi không có GPLX, GPLX hết hạn..."'
         };
       case 'multi_paragraph_reading':
         return {
           title: 'Multi-Paragraph Reading',
           description: 'Cần đọc và tổng hợp thông tin từ nhiều đoạn văn khác nhau',
-          example: 'Question: "Quy trình cấp đổi GPLX như thế nào?"\nAnswer: "Gồm 3 bước: nộp hồ sơ, kiểm tra, cấp mới"\nParagraphs: ["Điều về hồ sơ", "Điều về kiểm tra", "Điều về cấp phát"]'
+          example: 'Question: "Quy trình cấp đổi GPLX như thế nào?"\nAnswer: "Gồm 3 bước: nộp hồ sơ, kiểm tra, cấp mới"'
         };
       case 'multi_hop_reasoning':
         return {
           title: 'Multi-Hop Reasoning',
           description: 'Phức tạp nhất, cần nhiều bước suy luận logic liên tiếp để trả lời',
-          example: 'Question: "Người nước ngoài muốn lái xe tại VN cần làm gì?"\nReasoning: ["Xác định loại GPLX", "Kiểm tra hiệp định", "Thủ tục chuyển đổi", "Điều kiện cư trú"]\nAnswer: "Tùy thuộc vào quốc tịch và loại GPLX..."'
-        };
-      // Backward compatibility
-      case 'sft':
-        return {
-          title: 'SFT (Word Matching)',
-          description: 'Tạo cặp instruction-output đơn giản (tương đương Word Matching)',
-          example: 'Instruction: "Thời hạn GPLX hạng A1 là bao lâu?"\nOutput: "Theo Thông tư 12/2017, GPLX hạng A1 có giá trị không thời hạn."'
-        };
-      case 'cot':
-        return {
-          title: 'CoT (Concept Understanding)',
-          description: 'Tạo dữ liệu với hiểu biết khái niệm (tương đương Concept Understanding)',
-          example: 'Instruction: "Người 17 tuổi có được thi GPLX không?"\nConcepts: Độ tuổi tối thiểu\nAnswer: "Không"'
-        };
-      case 'rlhf':
-        return {
-          title: 'RLHF (Multi-Hop Reasoning)',
-          description: 'Tạo dữ liệu phức tạp (tương đương Multi-Hop Reasoning)',
-          example: 'Prompt: "Tư vấn thủ tục đổi GPLX"\nReasoning: Nhiều bước\nAnswer: Kết luận'
+          example: 'Question: "Người nước ngoài muốn lái xe tại VN cần làm gì?"\nAnswer: "Tùy thuộc vào quốc tịch và loại GPLX..."'
         };
       default:
         return { title: '', description: '', example: '' };
@@ -154,16 +135,53 @@ const DataGeneration = () => {
   const renderDataPreview = (item) => {
     const content = typeof item.content === 'string' ? JSON.parse(item.content) : item.content;
     
-    // Hiển thị format đơn giản: chỉ 3 trường (question, answer, difficulty)
+    // Render sources information nếu có với support cho multiple documents
+    const renderSources = (sources) => {
+      if (!sources || !Array.isArray(sources) || sources.length === 0) {
+        return null;
+      }
+      
+      // Group sources by document
+      const sourcesByDoc = sources.reduce((acc, source) => {
+        const docTitle = source.document_title;
+        if (!acc[docTitle]) {
+          acc[docTitle] = [];
+        }
+        acc[docTitle].push(source);
+        return acc;
+      }, {});
+      
+      return (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: '0.9em', color: '#666', marginBottom: 4 }}>
+            📚 Nguồn ({sources.length} điều):
+          </div>
+          {Object.entries(sourcesByDoc).map(([docTitle, docSources], docIndex) => (
+            <div key={docIndex} style={{ marginBottom: 4 }}>
+              <div style={{ fontSize: '0.8em', color: '#888', fontWeight: '500' }}>
+                📄 {docTitle}
+              </div>
+              {docSources.map((source, sourceIndex) => (
+                <div key={sourceIndex} style={{ marginLeft: 12, marginBottom: 2 }}>
+                  <Tag color="volcano" size="small">Điều {source.article_number}</Tag>
+                  <span style={{ fontSize: '0.75em', color: '#999', marginLeft: 4 }}>
+                    {source.article_title}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      );
+    };
+    
+    // Hiển thị format đơn giản với sources và metadata
     const getColorByType = (type) => {
       switch (type) {
         case 'word_matching': return 'blue';
         case 'concept_understanding': return 'green';
         case 'multi_paragraph_reading': return 'orange';
         case 'multi_hop_reasoning': return 'red';
-        case 'sft': return 'blue';
-        case 'cot': return 'green';
-        case 'rlhf': return 'red';
         default: return 'default';
       }
     };
@@ -174,9 +192,6 @@ const DataGeneration = () => {
         case 'concept_understanding': return 'Concept Understanding';
         case 'multi_paragraph_reading': return 'Multi-Paragraph Reading';
         case 'multi_hop_reasoning': return 'Multi-Hop Reasoning';
-        case 'sft': return 'SFT (Legacy)';
-        case 'cot': return 'CoT (Legacy)';
-        case 'rlhf': return 'RLHF (Legacy)';
         default: return type;
       }
     };
@@ -188,6 +203,7 @@ const DataGeneration = () => {
         <Tag color={getColorByType(item.data_type)}>
           {content.difficulty || 'Unknown'} - {getDisplayType(item.data_type)}
         </Tag>
+        {renderSources(content.sources)}
       </div>
     );
   };
@@ -400,9 +416,10 @@ const DataGeneration = () => {
 
 const getDataTypeColor = (type) => {
   switch (type) {
-    case 'sft': return 'blue';
-    case 'cot': return 'purple';
-    case 'rlhf': return 'orange';
+    case 'word_matching': return 'blue';
+    case 'concept_understanding': return 'green';
+    case 'multi_paragraph_reading': return 'purple';
+    case 'multi_hop_reasoning': return 'orange';
     default: return 'default';
   }
 };
