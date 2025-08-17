@@ -8,6 +8,7 @@ import jsonlines
 from datetime import datetime
 from data_generator import DataGenerator
 from coverage_analyzer import CoverageAnalyzer
+from file_handler import process_file, validate_file_size, get_supported_formats
 from models import db, LegalTopic, LegalDocument, TopicDocument, GeneratedData, LabeledData
 
 # Load .env file từ parent directory
@@ -262,7 +263,20 @@ def upload_document_file():
     document_type = request.form.get('document_type', 'law')
     
     # Đọc nội dung file
-    content = file.read().decode('utf-8', errors='ignore')
+    file_content = file.read()
+    
+    # Kiểm tra kích thước file
+    is_valid_size, size_error = validate_file_size(file_content, max_size_mb=50)
+    if not is_valid_size:
+        return jsonify({'error': size_error}), 400
+    
+    # Xử lý file bằng file handler
+    processing_result = process_file(file_content, file.filename)
+    
+    if not processing_result['success']:
+        return jsonify({'error': processing_result['error']}), 400
+    
+    content = processing_result['content']
     
     # Tạo document
     document = LegalDocument(
@@ -295,7 +309,20 @@ def upload_legal_document():
         return jsonify({'error': 'Không có file được chọn'}), 400
     
     # Đọc nội dung file
-    content = file.read().decode('utf-8')
+    file_content = file.read()
+    
+    # Kiểm tra kích thước file
+    is_valid_size, size_error = validate_file_size(file_content, max_size_mb=50)
+    if not is_valid_size:
+        return jsonify({'error': size_error}), 400
+    
+    # Xử lý file bằng file handler
+    processing_result = process_file(file_content, file.filename)
+    
+    if not processing_result['success']:
+        return jsonify({'error': processing_result['error']}), 400
+    
+    content = processing_result['content']
     
     # Tạo document mới
     document = LegalDocument(
@@ -726,6 +753,20 @@ def system_health():
             'status': 'unhealthy',
             'error': str(e),
             'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/system/supported-formats', methods=['GET'])
+def get_supported_file_formats():
+    """Lấy danh sách các format file được hỗ trợ"""
+    try:
+        formats = get_supported_formats()
+        return jsonify({
+            'supported_formats': formats,
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'Lỗi khi lấy danh sách format: {str(e)}'
         }), 500
 
 if __name__ == '__main__':
