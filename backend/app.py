@@ -7,9 +7,12 @@ import json
 import jsonlines
 from datetime import datetime
 from data_generator import DataGenerator
-from models import db, LegalTopic, GeneratedData, LabeledData
+from coverage_analyzer import CoverageAnalyzer
+from file_handler import process_file, validate_file_size, get_supported_formats
+from models import db, LegalTopic, LegalDocument, TopicDocument, GeneratedData, LabeledData
 
-load_dotenv()
+# Load .env file từ parent directory
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///legal_data.db')
@@ -19,9 +22,9 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 CORS(app)
 db.init_app(app)
 
-# Initialize data generator with Google API key
+# Initialize data generator with Google API key and similarity threshold
 google_api_key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
-data_generator = DataGenerator(api_key=google_api_key)
+data_generator = DataGenerator(api_key=google_api_key, similarity_threshold=0.75)
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -29,15 +32,30 @@ def health_check():
 
 @app.route('/api/topics', methods=['GET'])
 def get_topics():
-    """Lấy danh sách chủ đề pháp lý"""
+    """Lấy danh sách chủ đề pháp lý với documents"""
     topics = LegalTopic.query.all()
-    return jsonify([{
-        'id': topic.id,
-        'name': topic.name,
-        'description': topic.description,
-        'legal_text': topic.legal_text,
-        'created_at': topic.created_at.isoformat()
-    } for topic in topics])
+    result = []
+    
+    for topic in topics:
+        # Lấy tất cả documents liên quan
+        documents = db.session.query(LegalDocument).join(TopicDocument).filter(
+            TopicDocument.topic_id == topic.id
+        ).all()
+        
+        # Aggregate legal text từ tất cả documents
+        legal_text = '\n\n'.join([doc.content for doc in documents])
+        
+        result.append({
+            'id': topic.id,
+            'name': topic.name,
+            'description': topic.description,
+            'legal_text': legal_text,  # Để tương thích với frontend
+            'document_count': len(documents),
+            'documents': [{'id': doc.id, 'title': doc.title} for doc in documents],
+            'created_at': topic.created_at.isoformat()
+        })
+    
+    return jsonify(result)
 
 @app.route('/api/topics', methods=['POST'])
 def create_topic():
@@ -46,8 +64,7 @@ def create_topic():
     
     topic = LegalTopic(
         name=data['name'],
-        description=data.get('description', ''),
-        legal_text=data.get('legal_text', '')
+        description=data.get('description', '')
     )
     
     db.session.add(topic)
@@ -57,7 +74,8 @@ def create_topic():
         'id': topic.id,
         'name': topic.name,
         'description': topic.description,
-        'legal_text': topic.legal_text,
+        'document_count': 0,
+        'documents': [],
         'message': 'Chủ đề đã được tạo thành công'
     }), 201
 
@@ -87,6 +105,7 @@ def delete_topic(topic_id):
     topic = LegalTopic.query.get_or_404(topic_id)
     
     # Xóa tất cả dữ liệu liên quan
+    TopicDocument.query.filter_by(topic_id=topic_id).delete()
     GeneratedData.query.filter_by(topic_id=topic_id).delete()
     
     db.session.delete(topic)
@@ -96,80 +115,324 @@ def delete_topic(topic_id):
         'message': 'Chủ đề đã được xóa thành công'
     })
 
+@app.route('/api/documents', methods=['GET'])
+def get_documents():
+    """Lấy danh sách tài liệu"""
+    documents = LegalDocument.query.all()
+    result = []
+    
+    for doc in documents:
+        # Lấy các topic liên kết
+        topic_docs = TopicDocument.query.filter_by(document_id=doc.id).all()
+        topics = []
+        for td in topic_docs:
+            topic = LegalTopic.query.get(td.topic_id)
+            if topic:
+                topics.append({
+                    'id': topic.id,
+                    'name': topic.name
+                })
+        
+        result.append({
+            'id': doc.id,
+            'title': doc.title,
+            'content': doc.content,
+            'document_type': doc.document_type,
+            'document_number': doc.document_number,
+            'uploaded_at': doc.uploaded_at.isoformat(),
+            'created_at': doc.uploaded_at.isoformat(),
+            'topics': topics
+        })
+    
+    return jsonify(result)
+
+@app.route('/api/documents', methods=['POST'])
+def create_document():
+    """Tạo tài liệu mới"""
+    data = request.get_json()
+    
+    document = LegalDocument(
+        title=data['title'],
+        content=data['content'],
+        document_type=data.get('document_type', 'law'),
+        document_number=data.get('document_number', ''),
+        uploaded_by=data.get('uploaded_by', 'system')
+    )
+    
+    db.session.add(document)
+    db.session.commit()
+    
+    return jsonify({
+        'id': document.id,
+        'title': document.title,
+        'message': 'Tài liệu đã được tạo thành công'
+    }), 201
+
+@app.route('/api/topics/<int:topic_id>/documents/<int:document_id>', methods=['POST'])
+def link_document_to_topic(topic_id, document_id):
+    """Liên kết tài liệu với chủ đề"""
+    topic = LegalTopic.query.get_or_404(topic_id)
+    document = LegalDocument.query.get_or_404(document_id)
+    
+    # Kiểm tra đã liên kết chưa
+    existing = TopicDocument.query.filter_by(
+        topic_id=topic_id, 
+        document_id=document_id
+    ).first()
+    
+    if existing:
+        return jsonify({'message': 'Tài liệu đã được liên kết với chủ đề này'}), 400
+    
+    topic_doc = TopicDocument(
+        topic_id=topic_id,
+        document_id=document_id,
+        relevance_score=request.get_json().get('relevance_score', 1.0)
+    )
+    
+    db.session.add(topic_doc)
+    db.session.commit()
+    
+    return jsonify({
+        'message': 'Đã liên kết tài liệu với chủ đề thành công'
+    }), 201
+
+@app.route('/api/documents/<int:document_id>', methods=['PUT'])
+def update_document(document_id):
+    """Cập nhật tài liệu"""
+    document = LegalDocument.query.get_or_404(document_id)
+    data = request.get_json()
+    
+    if 'title' in data:
+        document.title = data['title']
+    if 'content' in data:
+        document.content = data['content']
+    if 'document_type' in data:
+        document.document_type = data['document_type']
+    
+    document.updated_at = datetime.utcnow()
+    db.session.commit()
+    
+    return jsonify({
+        'id': document.id,
+        'title': document.title,
+        'message': 'Tài liệu đã được cập nhật thành công'
+    })
+
+@app.route('/api/documents/<int:document_id>', methods=['DELETE'])
+def delete_document(document_id):
+    """Xóa tài liệu"""
+    document = LegalDocument.query.get_or_404(document_id)
+    
+    # Xóa các liên kết với chủ đề trước
+    TopicDocument.query.filter_by(document_id=document_id).delete()
+    
+    # Xóa tài liệu
+    db.session.delete(document)
+    db.session.commit()
+    
+    return jsonify({
+        'message': 'Đã xóa tài liệu thành công'
+    })
+
+@app.route('/api/topics/<int:topic_id>/documents/<int:document_id>', methods=['DELETE'])
+def unlink_document_from_topic(topic_id, document_id):
+    """Hủy liên kết tài liệu với chủ đề"""
+    topic_doc = TopicDocument.query.filter_by(
+        topic_id=topic_id, 
+        document_id=document_id
+    ).first_or_404()
+    
+    db.session.delete(topic_doc)
+    db.session.commit()
+    
+    return jsonify({
+        'message': 'Đã hủy liên kết tài liệu với chủ đề'
+    })
+
+@app.route('/api/documents/upload', methods=['POST'])
+def upload_document_file():
+    """Upload file tài liệu mà không cần liên kết với chủ đề"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'Không có file được tải lên'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'Tên file không hợp lệ'}), 400
+    
+    title = request.form.get('title', file.filename)
+    document_type = request.form.get('document_type', 'law')
+    
+    # Đọc nội dung file
+    file_content = file.read()
+    
+    # Kiểm tra kích thước file
+    is_valid_size, size_error = validate_file_size(file_content, max_size_mb=50)
+    if not is_valid_size:
+        return jsonify({'error': size_error}), 400
+    
+    # Xử lý file bằng file handler
+    processing_result = process_file(file_content, file.filename)
+    
+    if not processing_result['success']:
+        return jsonify({'error': processing_result['error']}), 400
+    
+    content = processing_result['content']
+    
+    # Tạo document
+    document = LegalDocument(
+        title=title,
+        content=content,
+        document_type=document_type
+    )
+    
+    db.session.add(document)
+    db.session.commit()
+    
+    return jsonify({
+        'id': document.id,
+        'title': document.title,
+        'message': 'Tài liệu đã được tải lên thành công'
+    }), 201
+
 @app.route('/api/upload', methods=['POST'])
 def upload_legal_document():
-    """Tải lên văn bản luật"""
+    """Tải lên văn bản luật và liên kết với chủ đề"""
     if 'file' not in request.files:
         return jsonify({'error': 'Không có file được tải lên'}), 400
     
     file = request.files['file']
     topic_id = request.form.get('topic_id')
+    document_title = request.form.get('title', file.filename)
+    document_type = request.form.get('document_type', 'law')
     
     if file.filename == '':
         return jsonify({'error': 'Không có file được chọn'}), 400
     
     # Đọc nội dung file
-    content = file.read().decode('utf-8')
+    file_content = file.read()
     
-    # Cập nhật chủ đề với văn bản luật
+    # Kiểm tra kích thước file
+    is_valid_size, size_error = validate_file_size(file_content, max_size_mb=50)
+    if not is_valid_size:
+        return jsonify({'error': size_error}), 400
+    
+    # Xử lý file bằng file handler
+    processing_result = process_file(file_content, file.filename)
+    
+    if not processing_result['success']:
+        return jsonify({'error': processing_result['error']}), 400
+    
+    content = processing_result['content']
+    
+    # Tạo document mới
+    document = LegalDocument(
+        title=document_title,
+        content=content,
+        document_type=document_type,
+        uploaded_by='user'
+    )
+    
+    db.session.add(document)
+    db.session.flush()  # Để có ID
+    
+    # Liên kết với topic nếu có
     if topic_id:
         topic = LegalTopic.query.get(topic_id)
         if topic:
-            topic.legal_text = content
-            db.session.commit()
+            topic_doc = TopicDocument(
+                topic_id=int(topic_id),
+                document_id=document.id,
+                relevance_score=1.0
+            )
+            db.session.add(topic_doc)
+    
+    db.session.commit()
     
     return jsonify({
-        'message': 'File đã được tải lên thành công',
+        'message': 'File đã được tải lên và liên kết thành công',
+        'document_id': document.id,
         'content_length': len(content)
     })
 
 @app.route('/api/generate', methods=['POST'])
 def generate_training_data():
-    """Sinh dữ liệu huấn luyện"""
+    """Sinh dữ liệu huấn luyện với 4 loại reasoning"""
     data = request.get_json()
     
     topic_id = data.get('topic_id')
-    data_type = data.get('data_type')  # 'sft', 'cot', 'rlhf'
+    data_type = data.get('data_type')
     num_samples = data.get('num_samples', 10)
     
+    # Validate data_type - chỉ chấp nhận 4 loại mới
+    valid_types = ['word_matching', 'concept_understanding', 'multi_paragraph_reading', 'multi_hop_reasoning']
     if not topic_id or not data_type:
         return jsonify({'error': 'Thiếu topic_id hoặc data_type'}), 400
+    
+    if data_type not in valid_types:
+        return jsonify({
+            'error': f'data_type không hợp lệ. Chỉ chấp nhận: {", ".join(valid_types)}'
+        }), 400
     
     topic = LegalTopic.query.get(topic_id)
     if not topic:
         return jsonify({'error': 'Không tìm thấy chủ đề'}), 404
     
+    # Lấy tất cả documents liên quan đến topic
+    documents = db.session.query(LegalDocument).join(TopicDocument).filter(
+        TopicDocument.topic_id == topic_id
+    ).all()
+    
+    if not documents:
+        return jsonify({'error': 'Chủ đề chưa có tài liệu pháp luật nào'}), 400
+    
     try:
-        # Sinh dữ liệu dựa trên loại
-        if data_type == 'sft':
-            generated_samples = data_generator.generate_sft_data(
-                topic.legal_text, topic.name, num_samples
-            )
-        elif data_type == 'cot':
-            generated_samples = data_generator.generate_cot_data(
-                topic.legal_text, topic.name, num_samples
-            )
-        elif data_type == 'rlhf':
-            generated_samples = data_generator.generate_rlhf_data(
-                topic.legal_text, topic.name, num_samples
-            )
-        else:
-            return jsonify({'error': 'Loại dữ liệu không hợp lệ'}), 400
+        # Cập nhật similarity corpus với câu hỏi hiện có
+        existing_data = GeneratedData.query.filter_by(topic_id=topic_id).all()
+        existing_questions = []
+        for item in existing_data:
+            existing_questions.append({
+                'id': item.id,
+                'data_type': item.data_type,
+                'content': item.content
+            })
         
-        # Lưu vào database
+        data_generator.update_similarity_corpus(existing_questions)
+        
+        # Sử dụng method mới với article-based generation
+        generated_samples = data_generator.generate_from_multiple_documents(
+            documents, topic.name, data_type, num_samples
+        )
+        
+        # Lưu vào database với metadata chi tiết
         for sample in generated_samples:
+            # Extract metadata nếu có
+            metadata = sample.pop('metadata', {})
+            
             generated_data = GeneratedData(
                 topic_id=topic_id,
                 data_type=data_type,
-                content=json.dumps(sample, ensure_ascii=False)
+                content=json.dumps({
+                    **sample,
+                    'metadata': metadata
+                }, ensure_ascii=False)
             )
             db.session.add(generated_data)
         
         db.session.commit()
         
+        # Tạo summary về document distribution
+        document_summary = {}
+        for sample in generated_samples:
+            if 'metadata' in sample and 'source_document' in sample['metadata']:
+                doc_name = sample['metadata']['source_document']
+                document_summary[doc_name] = document_summary.get(doc_name, 0) + 1
+        
         return jsonify({
-            'message': f'Đã sinh {len(generated_samples)} mẫu dữ liệu {data_type.upper()}',
-            'samples': generated_samples
+            'message': f'Đã sinh {len(generated_samples)} mẫu dữ liệu {data_type}',
+            'total_samples': len(generated_samples),
+            'document_distribution': document_summary,
+            'documents_used': [{'title': doc.title, 'id': doc.id} for doc in documents],
+            'samples': generated_samples[:5]  # Chỉ hiển thị 5 samples đầu để preview
         })
         
     except Exception as e:
@@ -184,7 +447,8 @@ def get_generated_data(topic_id):
     if data_type:
         query = query.filter_by(data_type=data_type)
     
-    data = query.all()
+    # Sắp xếp theo ID giảm dần để lấy dữ liệu mới nhất trước
+    data = query.order_by(GeneratedData.id.desc()).all()
     
     result = []
     for item in data:
@@ -304,6 +568,206 @@ def get_statistics():
         'data_type_distribution': dict(data_type_stats),
         'label_distribution': dict(label_stats)
     })
+
+@app.route('/api/topics/<int:topic_id>/coverage', methods=['POST'])
+def analyze_topic_coverage(topic_id):
+    """Phân tích độ bao phủ của bộ câu hỏi cho một chủ đề"""
+    try:
+        data = request.get_json()
+        unit_type = data.get('unit_type', 'sentence')  # sentence, paragraph
+        threshold = data.get('threshold', 0.3)
+        
+        # Validate unit_type
+        if unit_type not in ['sentence', 'paragraph']:
+            return jsonify({'error': 'unit_type phải là "sentence" hoặc "paragraph"'}), 400
+        
+        # Lấy topic và documents
+        topic = LegalTopic.query.get_or_404(topic_id)
+        documents = db.session.query(LegalDocument).join(TopicDocument).filter(
+            TopicDocument.topic_id == topic_id
+        ).all()
+        
+        if not documents:
+            return jsonify({'error': 'Không có document nào cho chủ đề này'}), 400
+        
+        # Chuẩn bị documents data
+        documents_data = []
+        for doc in documents:
+            documents_data.append({
+                'id': doc.id,
+                'title': doc.title,
+                'content': doc.content
+            })
+        
+        # Lấy câu hỏi đã sinh cho topic này
+        questions = GeneratedData.query.filter_by(topic_id=topic_id).all()
+        questions_data = []
+        for q in questions:
+            questions_data.append({
+                'id': q.id,
+                'data_type': q.data_type,
+                'content': q.content
+            })
+        
+        if not questions_data:
+            return jsonify({'error': 'Không có câu hỏi nào được sinh cho chủ đề này'}), 400
+        
+        # Phân tích coverage
+        analyzer = CoverageAnalyzer(coverage_threshold=threshold)
+        analyzer.prepare_coverage_analysis(documents_data, questions_data, unit_type)
+        
+        coverage_result = analyzer.analyze_coverage()
+        doc_summary = analyzer.get_coverage_summary_by_document(coverage_result)
+        
+        # Thêm thông tin topic
+        coverage_result['topic_info'] = {
+            'id': topic.id,
+            'name': topic.name,
+            'description': topic.description
+        }
+        
+        coverage_result['document_summary'] = doc_summary
+        coverage_result['analysis_settings'] = {
+            'unit_type': unit_type,
+            'threshold': threshold,
+            'total_documents': len(documents_data),
+            'total_questions': len(questions_data)
+        }
+        
+        return jsonify(coverage_result)
+    
+    except Exception as e:
+        return jsonify({'error': f'Lỗi phân tích coverage: {str(e)}'}), 500
+
+@app.route('/api/coverage/batch', methods=['POST'])
+def analyze_batch_coverage():
+    """Phân tích coverage cho nhiều topics cùng lúc"""
+    try:
+        data = request.get_json()
+        topic_ids = data.get('topic_ids', [])
+        unit_type = data.get('unit_type', 'sentence')
+        threshold = data.get('threshold', 0.3)
+        
+        if not topic_ids:
+            return jsonify({'error': 'Cần cung cấp danh sách topic_ids'}), 400
+        
+        results = {}
+        
+        for topic_id in topic_ids:
+            try:
+                topic = LegalTopic.query.get(topic_id)
+                if not topic:
+                    results[topic_id] = {'error': f'Topic {topic_id} không tồn tại'}
+                    continue
+                
+                documents = db.session.query(LegalDocument).join(TopicDocument).filter(
+                    TopicDocument.topic_id == topic_id
+                ).all()
+                
+                questions = GeneratedData.query.filter_by(topic_id=topic_id).all()
+                
+                if not documents or not questions:
+                    results[topic_id] = {
+                        'error': 'Không có đủ dữ liệu để phân tích',
+                        'documents_count': len(documents),
+                        'questions_count': len(questions)
+                    }
+                    continue
+                
+                # Phân tích coverage cho topic này
+                documents_data = [{'id': doc.id, 'title': doc.title, 'content': doc.content} for doc in documents]
+                questions_data = [{'id': q.id, 'data_type': q.data_type, 'content': q.content} for q in questions]
+                
+                analyzer = CoverageAnalyzer(coverage_threshold=threshold)
+                analyzer.prepare_coverage_analysis(documents_data, questions_data, unit_type)
+                coverage_result = analyzer.analyze_coverage()
+                
+                # Chỉ lưu summary, không lưu chi tiết units
+                results[topic_id] = {
+                    'topic_name': topic.name,
+                    'total_units': coverage_result['total_units'],
+                    'covered_units': coverage_result['covered_units'],
+                    'coverage_percentage': coverage_result['coverage_percentage'],
+                    'documents_count': len(documents),
+                    'questions_count': len(questions)
+                }
+                
+            except Exception as e:
+                results[topic_id] = {'error': f'Lỗi phân tích topic {topic_id}: {str(e)}'}
+        
+        return jsonify({
+            'analysis_settings': {
+                'unit_type': unit_type,
+                'threshold': threshold
+            },
+            'results': results
+        })
+    
+    except Exception as e:
+        return jsonify({'error': f'Lỗi phân tích batch coverage: {str(e)}'}), 500
+
+@app.route('/api/system/health', methods=['GET'])
+def system_health():
+    """Kiểm tra sức khỏe hệ thống và các component"""
+    try:
+        # Kiểm tra database
+        total_topics = LegalTopic.query.count()
+        total_documents = LegalDocument.query.count()
+        total_generated = GeneratedData.query.count()
+        
+        # Kiểm tra similarity checker
+        similarity_status = "OK" if data_generator.similarity_checker else "NOT_INITIALIZED"
+        
+        # Kiểm tra coverage analyzer
+        try:
+            test_analyzer = CoverageAnalyzer()
+            coverage_status = "OK"
+        except Exception:
+            coverage_status = "ERROR"
+        
+        return jsonify({
+            'status': 'healthy',
+            'components': {
+                'database': {
+                    'status': 'OK',
+                    'topics': total_topics,
+                    'documents': total_documents,
+                    'generated_questions': total_generated
+                },
+                'similarity_checker': {
+                    'status': similarity_status,
+                    'threshold': getattr(data_generator, 'similarity_threshold', None)
+                },
+                'coverage_analyzer': {
+                    'status': coverage_status
+                },
+                'data_generator': {
+                    'status': 'OK' if data_generator else 'ERROR'
+                }
+            },
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/system/supported-formats', methods=['GET'])
+def get_supported_file_formats():
+    """Lấy danh sách các format file được hỗ trợ"""
+    try:
+        formats = get_supported_formats()
+        return jsonify({
+            'supported_formats': formats,
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            'error': f'Lỗi khi lấy danh sách format: {str(e)}'
+        }), 500
 
 if __name__ == '__main__':
     with app.app_context():
