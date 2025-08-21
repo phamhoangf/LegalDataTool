@@ -177,6 +177,20 @@ const DocumentManagement = () => {
       },
     },
     {
+      title: 'Articles',
+      key: 'articles_count',
+      width: 100,
+      align: 'center',
+      render: (_, record) => {
+        const count = record.articles_count || 0;
+        return (
+          <Tag color={count > 0 ? 'green' : 'default'}>
+            {count} điều
+          </Tag>
+        );
+      },
+    },
+    {
       title: 'Chủ Đề Liên Kết',
       key: 'linked_topics',
       render: (_, record) => {
@@ -236,6 +250,7 @@ const DocumentManagement = () => {
                     <div>
                       <p><strong>Loại:</strong> {record.document_type === 'law' ? 'Văn bản pháp luật' : 'Tài liệu khác'}</p>
                       <p><strong>Độ dài:</strong> {record.content ? record.content.length.toLocaleString() : 0} ký tự</p>
+                      <p><strong>Số lượng điều:</strong> <Tag color={record.articles_count > 0 ? 'green' : 'default'}>{record.articles_count || 0} điều</Tag></p>
                       
                       {record.topics && record.topics.length > 0 && (
                         <div>

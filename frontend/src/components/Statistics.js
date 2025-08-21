@@ -17,7 +17,8 @@ import {
   Typography,
   Collapse,
   InputNumber,
-  Tooltip
+  Tooltip,
+  message
 } from 'antd';
 import {
   BarChartOutlined,
@@ -46,6 +47,7 @@ const Statistics = () => {
   const [coverageLoading, setCoverageLoading] = useState(false);
   const [coverageData, setCoverageData] = useState(null);
   const [selectedTopicId, setSelectedTopicId] = useState(null);
+  const [analyzingTopicId, setAnalyzingTopicId] = useState(null); // Track topic đang analyze
   const [coverageSettings, setCoverageSettings] = useState({
     unit_type: 'sentence',
     threshold: 0.4
@@ -77,27 +79,34 @@ const Statistics = () => {
   const analyzeCoverage = async (topicId) => {
     try {
       setCoverageLoading(true);
-      const response = await fetch(`/api/topics/${topicId}/coverage`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(coverageSettings)
-      });
+      setAnalyzingTopicId(topicId);
       
-      if (!response.ok) {
-        throw new Error('Không thể phân tích coverage');
-      }
+      const response = await apiService.analyzeCoverage(topicId, coverageSettings);
+      const data = response.data;
       
-      const data = await response.json();
       setCoverageData(data);
       setSelectedTopicId(topicId);
       setCoverageModalVisible(true);
+      message.success('Phân tích coverage hoàn thành');
+      
     } catch (err) {
       console.error('Error analyzing coverage:', err);
-      // Có thể thêm notification ở đây
+      message.error('Lỗi phân tích coverage: ' + (err.response?.data?.error || err.message));
     } finally {
       setCoverageLoading(false);
+      setAnalyzingTopicId(null);
+    }
+  };
+
+  const stopCoverageAnalysis = async (topicId) => {
+    try {
+      await apiService.stopCoverageAnalysis(topicId);
+      message.success('Đã yêu cầu dừng phân tích coverage');
+      setAnalyzingTopicId(null); // Reset state khi dừng thành công
+      setCoverageLoading(false);
+    } catch (err) {
+      console.error('Error stopping coverage analysis:', err);
+      message.error('Lỗi dừng phân tích: ' + (err.response?.data?.error || err.message));
     }
   };
 
@@ -150,17 +159,39 @@ const Statistics = () => {
       title: 'Hành động',
       key: 'actions',
       render: (_, record) => (
-        <Tooltip title="Phân tích độ bao phủ">
-          <Button
-            type="primary"
-            size="small"
-            icon={<AimOutlined />}
-            onClick={() => analyzeCoverage(record.id)}
-            loading={coverageLoading && selectedTopicId === record.id}
-          >
-            Coverage
-          </Button>
-        </Tooltip>
+        <div>
+          {coverageLoading && analyzingTopicId === record.id ? (
+            <div>
+              <Button
+                type="primary"
+                size="small"
+                loading={true}
+                style={{ marginRight: 8 }}
+              >
+                Đang phân tích...
+              </Button>
+              <Button
+                type="default"
+                size="small"
+                danger
+                onClick={() => stopCoverageAnalysis(record.id)}
+              >
+                🛑 Dừng
+              </Button>
+            </div>
+          ) : (
+            <Tooltip title="Phân tích độ bao phủ">
+              <Button
+                type="primary"
+                size="small"
+                icon={<AimOutlined />}
+                onClick={() => analyzeCoverage(record.id)}
+              >
+                Coverage
+              </Button>
+            </Tooltip>
+          )}
+        </div>
       ),
     },
   ];
@@ -479,6 +510,13 @@ const Statistics = () => {
               <Tag color="orange">Ngưỡng: {coverageData.threshold_used}</Tag>
               <Tag color="green">Documents: {coverageData.analysis_settings?.total_documents}</Tag>
               <Tag color="purple">Câu hỏi: {coverageData.analysis_settings?.total_questions}</Tag>
+              
+              {coverageData.was_stopped && (
+                <Tag color="red">🛑 Đã dừng tại {coverageData.processed_units}/{coverageData.total_units} units</Tag>
+              )}
+              {coverageData.processed_units && coverageData.processed_units !== coverageData.total_units && !coverageData.was_stopped && (
+                <Tag color="orange">⚠️ Xử lý {coverageData.processed_units}/{coverageData.total_units} units</Tag>
+              )}
             </Card>
 
             {/* Document Summary */}

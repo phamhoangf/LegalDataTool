@@ -58,6 +58,11 @@ export const apiService = {
 
   // Statistics
   getStatistics: () => api.get('/stats'),
+  
+  // Coverage Analysis
+  analyzeCoverage: (topicId, settings) => api.post(`/topics/${topicId}/coverage`, settings),
+  stopCoverageAnalysis: (topicId) => api.post(`/topics/${topicId}/coverage/stop`),
+  analyzeBatchCoverage: (settings) => api.post('/coverage/batch', settings),
 };
 
 export default apiService;

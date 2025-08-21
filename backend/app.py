@@ -8,6 +8,7 @@ import jsonlines
 from datetime import datetime
 from data_generator import DataGenerator
 from coverage_analyzer import CoverageAnalyzer
+from legal_parser import LegalDocumentParser
 from models import db, LegalTopic, LegalDocument, TopicDocument, GeneratedData, LabeledData
 
 # Load .env file từ parent directory
@@ -24,6 +25,12 @@ db.init_app(app)
 # Initialize data generator with Google API key and similarity threshold
 google_api_key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
 data_generator = DataGenerator(api_key=google_api_key, similarity_threshold=0.75)
+
+# Initialize legal document parser
+legal_parser = LegalDocumentParser()
+
+# Global variable để lưu coverage analyzer instances  
+coverage_analyzers = {}
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -132,6 +139,16 @@ def get_documents():
                     'name': topic.name
                 })
         
+        # Parse articles count from parsed_structure
+        articles_count = 0
+        if doc.parsed_structure:
+            try:
+                structure = json.loads(doc.parsed_structure)
+                articles = structure.get('articles', [])
+                articles_count = len(articles)
+            except (json.JSONDecodeError, TypeError):
+                articles_count = 0
+
         result.append({
             'id': doc.id,
             'title': doc.title,
@@ -140,8 +157,51 @@ def get_documents():
             'document_number': doc.document_number,
             'uploaded_at': doc.uploaded_at.isoformat(),
             'created_at': doc.uploaded_at.isoformat(),
+            'articles_count': articles_count,
             'topics': topics
         })
+    
+    return jsonify(result)
+
+@app.route('/api/documents/<int:doc_id>', methods=['GET'])
+def get_document(doc_id):
+    """Lấy thông tin chi tiết tài liệu"""
+    doc = LegalDocument.query.get(doc_id)
+    if not doc:
+        return jsonify({'error': 'Document not found'}), 404
+    
+    # Lấy các topic liên kết
+    topic_docs = TopicDocument.query.filter_by(document_id=doc.id).all()
+    topics = []
+    for td in topic_docs:
+        topic = LegalTopic.query.get(td.topic_id)
+        if topic:
+            topics.append({
+                'id': topic.id,
+                'name': topic.name
+            })
+    
+    result = {
+        'id': doc.id,
+        'title': doc.title,
+        'content': doc.content,
+        'document_type': doc.document_type,
+        'document_number': doc.document_number,
+        'uploaded_at': doc.uploaded_at.isoformat(),
+        'created_at': doc.uploaded_at.isoformat(),
+        'topics': topics
+    }
+    
+    # Thêm parsed_structure nếu có
+    if doc.parsed_structure:
+        try:
+            import json
+            result['parsed_structure'] = json.loads(doc.parsed_structure)
+            result['parsed'] = True
+        except:
+            result['parsed'] = False
+    else:
+        result['parsed'] = False
     
     return jsonify(result)
 
@@ -150,9 +210,20 @@ def create_document():
     """Tạo tài liệu mới"""
     data = request.get_json()
     
+    # Parse document structure ngay khi tạo
+    parsed_structure = None
+    try:
+        print(f"🔄 Parsing document: {data['title']}")
+        structure = legal_parser.parse_document(data['title'], data['content'])
+        parsed_structure = json.dumps(structure, ensure_ascii=False)
+        print(f"✅ Document parsed successfully")
+    except Exception as e:
+        print(f"⚠️ Parsing failed: {str(e)}")
+    
     document = LegalDocument(
         title=data['title'],
         content=data['content'],
+        parsed_structure=parsed_structure,
         document_type=data.get('document_type', 'law'),
         document_number=data.get('document_number', ''),
         uploaded_by=data.get('uploaded_by', 'system')
@@ -164,6 +235,7 @@ def create_document():
     return jsonify({
         'id': document.id,
         'title': document.title,
+        'parsed': parsed_structure is not None,
         'message': 'Tài liệu đã được tạo thành công'
     }), 201
 
@@ -297,10 +369,21 @@ def upload_legal_document():
     # Đọc nội dung file
     content = file.read().decode('utf-8')
     
+    # Parse document structure ngay khi upload
+    parsed_structure = None
+    try:
+        print(f"🔄 Parsing uploaded document: {document_title}")
+        structure = legal_parser.parse_document(document_title, content)
+        parsed_structure = json.dumps(structure, ensure_ascii=False)
+        print(f"✅ Uploaded document parsed successfully")
+    except Exception as e:
+        print(f"⚠️ Parsing failed: {str(e)}")
+    
     # Tạo document mới
     document = LegalDocument(
         title=document_title,
         content=content,
+        parsed_structure=parsed_structure,
         document_type=document_type,
         uploaded_by='user'
     )
@@ -585,11 +668,17 @@ def analyze_topic_coverage(topic_id):
         if not questions_data:
             return jsonify({'error': 'Không có câu hỏi nào được sinh cho chủ đề này'}), 400
         
-        # Phân tích coverage
+        # Phân tích coverage đồng bộ (đơn giản)
         analyzer = CoverageAnalyzer(coverage_threshold=threshold)
-        analyzer.prepare_coverage_analysis(documents_data, questions_data, unit_type)
+        coverage_analyzers[topic_id] = analyzer  # Lưu để có thể dừng
         
+        analyzer.prepare_coverage_analysis(documents_data, questions_data, unit_type)
         coverage_result = analyzer.analyze_coverage()
+        
+        # Cleanup analyzer sau khi xong
+        if topic_id in coverage_analyzers:
+            del coverage_analyzers[topic_id]
+        
         doc_summary = analyzer.get_coverage_summary_by_document(coverage_result)
         
         # Thêm thông tin topic
@@ -606,11 +695,24 @@ def analyze_topic_coverage(topic_id):
             'total_documents': len(documents_data),
             'total_questions': len(questions_data)
         }
-        
+
         return jsonify(coverage_result)
     
     except Exception as e:
         return jsonify({'error': f'Lỗi phân tích coverage: {str(e)}'}), 500
+
+@app.route('/api/topics/<int:topic_id>/coverage/stop', methods=['POST'])
+def stop_coverage_analysis(topic_id):
+    """Dừng phân tích coverage cho topic cụ thể"""
+    try:
+        if topic_id in coverage_analyzers:
+            coverage_analyzers[topic_id].stop_analysis()
+            return jsonify({'message': f'Đã yêu cầu dừng phân tích coverage cho topic {topic_id}'})
+        else:
+            return jsonify({'error': 'Không tìm thấy phân tích coverage đang chạy cho topic này'}), 404
+    
+    except Exception as e:
+        return jsonify({'error': f'Lỗi dừng phân tích: {str(e)}'}), 500
 
 @app.route('/api/coverage/batch', methods=['POST'])
 def analyze_batch_coverage():
@@ -678,55 +780,6 @@ def analyze_batch_coverage():
     
     except Exception as e:
         return jsonify({'error': f'Lỗi phân tích batch coverage: {str(e)}'}), 500
-
-@app.route('/api/system/health', methods=['GET'])
-def system_health():
-    """Kiểm tra sức khỏe hệ thống và các component"""
-    try:
-        # Kiểm tra database
-        total_topics = LegalTopic.query.count()
-        total_documents = LegalDocument.query.count()
-        total_generated = GeneratedData.query.count()
-        
-        # Kiểm tra similarity checker
-        similarity_status = "OK" if data_generator.similarity_checker else "NOT_INITIALIZED"
-        
-        # Kiểm tra coverage analyzer
-        try:
-            test_analyzer = CoverageAnalyzer()
-            coverage_status = "OK"
-        except Exception:
-            coverage_status = "ERROR"
-        
-        return jsonify({
-            'status': 'healthy',
-            'components': {
-                'database': {
-                    'status': 'OK',
-                    'topics': total_topics,
-                    'documents': total_documents,
-                    'generated_questions': total_generated
-                },
-                'similarity_checker': {
-                    'status': similarity_status,
-                    'threshold': getattr(data_generator, 'similarity_threshold', None)
-                },
-                'coverage_analyzer': {
-                    'status': coverage_status
-                },
-                'data_generator': {
-                    'status': 'OK' if data_generator else 'ERROR'
-                }
-            },
-            'timestamp': datetime.now().isoformat()
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'status': 'unhealthy',
-            'error': str(e),
-            'timestamp': datetime.now().isoformat()
-        }), 500
 
 if __name__ == '__main__':
     with app.app_context():

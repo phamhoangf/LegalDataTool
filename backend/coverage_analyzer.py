@@ -1,32 +1,45 @@
 #!/usr/bin/env python3
 """
 Coverage Analyzer - Đo độ bao phủ của bộ câu hỏi đối với văn bản gốc
+Uses hybrid search for optimal accuracy
 """
 
 import re
 import json
-from typing import List, Dict, Any, Tuple
-from rank_bm25 import BM25Okapi
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
+from typing import List, Dict, Any, Tuple, Optional
+from hybrid_search import HybridSearchEngine, create_hybrid_search_engine
 
 class CoverageAnalyzer:
     """
     Phân tích độ bao phủ của bộ câu hỏi đối với văn bản pháp luật
+    Sử dụng Hybrid Search (BM25 + Semantic)
     """
     
-    def __init__(self, coverage_threshold: float = 0.3):
+    def __init__(self, 
+                 coverage_threshold: float = 0.3,
+                 hybrid_config: Optional[Dict[str, Any]] = None):
         """
         Args:
             coverage_threshold: Ngưỡng để xác định unit được bao phủ (0-1)
+            hybrid_config: Configuration for hybrid search engine
         """
         self.coverage_threshold = coverage_threshold
+        self.should_stop = False  # Flag để dừng phân tích
+        
+        print(f"🧠 Initializing hybrid coverage analyzer with threshold {coverage_threshold}")
+        self.hybrid_engine = create_hybrid_search_engine(hybrid_config)
+        
         self.text_units = []  # Các đơn vị văn bản (câu/đoạn)
         self.questions = []   # Các câu hỏi đã sinh
-        self.bm25 = None
-        self.tfidf_vectorizer = None
-        self.questions_tfidf = None
+        
+    def stop_analysis(self):
+        """Dừng quá trình phân tích"""
+        self.should_stop = True
+        print("🛑 Đã yêu cầu dừng phân tích coverage")
+        
+    def reset_stop_flag(self):
+        """Reset flag dừng để chuẩn bị cho phân tích mới"""
+        self.should_stop = False
         
     def preprocess_text(self, text: str) -> List[str]:
         """
@@ -72,18 +85,41 @@ class CoverageAnalyzer:
         units = []
         
         if unit_type == 'sentence':
-            # Chia thành câu (điều)
-            sentences = re.split(r'[.!?]+', text)
-            for i, sentence in enumerate(sentences):
-                sentence = sentence.strip()
-                if len(sentence) > 20:  # Lọc câu quá ngắn
-                    units.append({
-                        'id': f'sent_{i}',
-                        'type': 'sentence',
-                        'content': sentence,
-                        'length': len(sentence),
-                        'tokens': self.preprocess_text(sentence)
-                    })
+            # Chia thành các điều luật theo pattern "Điều X."
+            # Sử dụng split approach đơn giản và hiệu quả
+            parts = re.split(r'(?=Điều\s+\d+\.)', text, flags=re.IGNORECASE)
+            
+            article_count = 0
+            for i, part in enumerate(parts):
+                part = part.strip()
+                if len(part) < 30:  # Loại bỏ phần quá ngắn (header, footer)
+                    continue
+                    
+                # Tìm số điều và tên điều
+                article_match = re.search(r'Điều\s+(\d+)\.\s*([^\r\n]*)', part, re.IGNORECASE)
+                if article_match:
+                    article_num = article_match.group(1)
+                    article_title = article_match.group(2).strip()
+                    article_id = f'dieu_{article_num}'
+                    type_label = 'article'
+                    article_count += 1
+                else:
+                    # Phần không có "Điều X." (có thể là phần đầu văn bản)
+                    article_id = f'part_{i}'
+                    article_title = part[:50].replace('\n', ' ').strip()
+                    type_label = 'section'
+                
+                units.append({
+                    'id': article_id,
+                    'type': type_label,
+                    'content': part,
+                    'length': len(part),
+                    'tokens': self.preprocess_text(part),
+                    'article_number': int(article_match.group(1)) if article_match else None,
+                    'article_title': article_title
+                })
+            
+            print(f"📋 Đã chia thành {len(units)} units, trong đó {article_count} điều luật")
                     
         elif unit_type == 'paragraph':
             # Chia thành đoạn
@@ -107,7 +143,7 @@ class CoverageAnalyzer:
         
         Args:
             documents: List các documents với content
-            questions_data: List các câu hỏi đã sinh
+            questions_data: List các câu hỏi đã sinh với source information
             unit_type: Loại đơn vị để phân tích
         """
         # Bước 1: Chia văn bản thành units
@@ -123,7 +159,7 @@ class CoverageAnalyzer:
         
         print(f"📄 Chia thành {len(self.text_units)} {unit_type}s từ {len(documents)} documents")
         
-        # Bước 2: Chuẩn bị câu hỏi
+        # Bước 2: Chuẩn bị câu hỏi với source information
         self.questions = []
         for item in questions_data:
             if isinstance(item.get('content'), str):
@@ -132,44 +168,34 @@ class CoverageAnalyzer:
                 content = item.get('content', {})
             
             question = content.get('question', '')
+            sources = content.get('sources', [])  # Extract source information
+            
             if question:
                 self.questions.append({
                     'id': item.get('id'),
                     'question': question,
                     'data_type': item.get('data_type'),
+                    'sources': sources,  # Add source information
                     'tokens': self.preprocess_text(question)
                 })
         
         print(f"❓ Chuẩn bị {len(self.questions)} câu hỏi")
         
-        # Bước 3: Khởi tạo BM25 và TF-IDF cho units
+        # Bước 3: Khởi tạo hybrid search engine
         unit_texts = [' '.join(unit['tokens']) for unit in self.text_units]
         
-        if unit_texts:
-            # BM25 cho units
-            unit_token_lists = [unit['tokens'] for unit in self.text_units]
-            self.bm25 = BM25Okapi(unit_token_lists)
-            
-            # TF-IDF cho questions
-            question_texts = [' '.join(q['tokens']) for q in self.questions]
-            if question_texts:
-                self.tfidf_vectorizer = TfidfVectorizer()
-                # Fit trên cả units và questions
-                all_texts = unit_texts + question_texts
-                self.tfidf_vectorizer.fit(all_texts)
-                
-                # Transform questions
-                self.questions_tfidf = self.tfidf_vectorizer.transform(question_texts)
-                
-                print("🔍 Khởi tạo BM25 và TF-IDF hoàn thành")
-            else:
-                print("⚠️ Không có câu hỏi để phân tích")
+        if unit_texts and self.questions:
+            # Use hybrid search for question-unit matching
+            print("🧠 Initializing hybrid search for coverage analysis...")
+            self.hybrid_engine.index_documents(unit_texts, list(range(len(self.text_units))))
+            print("✅ Hybrid search ready for coverage analysis")
         else:
-            print("⚠️ Không có units để phân tích")
+            print("⚠️ Không có units hoặc questions để phân tích")
     
     def calculate_unit_coverage(self, unit: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Tính độ bao phủ cho một unit cụ thể
+        Tính độ bao phủ cho một unit cụ thể, chỉ tính với questions có sources liên quan
+        Sử dụng hybrid search cho accuracy tốt hơn
         
         Args:
             unit: Unit cần tính coverage
@@ -177,52 +203,70 @@ class CoverageAnalyzer:
         Returns:
             Dict: Thông tin coverage của unit
         """
-        if not self.questions or not self.bm25:
-            return {
-                'is_covered': False,
-                'max_similarity': 0.0,
-                'best_question': None,
-                'similarities': []
-            }
+        base_result = {
+            'is_covered': False,
+            'max_similarity': 0.0,
+            'best_question': None,
+            'similarities': [],
+            'relevant_questions_count': 0
+        }
+        
+        if not self.questions:
+            return base_result
         
         unit_tokens = unit['tokens']
+        unit_text = ' '.join(unit_tokens)
+        unit_doc_title = unit.get('document_title', 'Unknown')
+        
+        # Filter questions that reference this unit's document as source
+        relevant_questions = []
+        for i, question in enumerate(self.questions):
+            # Check if this unit's document is in the question's sources
+            for source in question.get('sources', []):
+                # Try different possible field names for document title
+                source_title = (source.get('document_title') or 
+                              source.get('title') or 
+                              source.get('name') or 
+                              source.get('article_title', ''))
+                
+                if source_title and source_title == unit_doc_title:
+                    relevant_questions.append((i, question))
+                    break
+        
+        # If no relevant questions, return no coverage
+        if not relevant_questions:
+            return base_result
+        
         similarities = []
         
-        # Tính similarity với tất cả câu hỏi
-        for i, question in enumerate(self.questions):
-            # BM25 score - truyền query dạng list của tokens
-            bm25_score = 0.0
-            if len(unit_tokens) > 0:
-                bm25_scores = self.bm25.get_scores(unit_tokens)
-                # Lấy max score từ tất cả documents
-                bm25_score = max(bm25_scores) if len(bm25_scores) > 0 else 0.0
-            
-            # Normalize BM25 score
-            if bm25_score > 0:
-                bm25_score = min(bm25_score / 10.0, 1.0)  # Simple normalization
-            
-            # TF-IDF cosine similarity
-            tfidf_score = 0.0
-            if self.tfidf_vectorizer and self.questions_tfidf is not None:
-                try:
-                    unit_text = ' '.join(unit_tokens)
-                    unit_tfidf = self.tfidf_vectorizer.transform([unit_text])
-                    question_tfidf = self.questions_tfidf[i:i+1]
-                    tfidf_score = cosine_similarity(unit_tfidf, question_tfidf)[0][0]
-                except:
-                    tfidf_score = 0.0
-            
-            # Kết hợp scores
-            combined_score = 0.3 * bm25_score + 0.7 * tfidf_score
-            
-            similarities.append({
-                'question_id': question['id'],
-                'question': question['question'],
-                'data_type': question['data_type'],
-                'bm25_score': float(bm25_score),
-                'tfidf_score': float(tfidf_score),
-                'combined_score': float(combined_score)
-            })
+        # Use hybrid search to compute similarity between unit and relevant questions
+        for i, question in relevant_questions:
+            try:
+                # Compute similarity between unit text and question
+                similarity_result = self.hybrid_engine.compute_similarity(unit_text, question['question'])
+                combined_score = similarity_result['combined_score']
+                
+                similarities.append({
+                    'question_id': question['id'],
+                    'question': question['question'],
+                    'data_type': question['data_type'],
+                    'bm25_score': similarity_result['bm25_score'],
+                    'semantic_score': similarity_result['semantic_score'],
+                    'tfidf_score': similarity_result['tfidf_score'],
+                    'combined_score': combined_score
+                })
+            except Exception as e:
+                print(f"⚠️ Error computing hybrid similarity: {e}")
+                # Fallback to zero score
+                similarities.append({
+                    'question_id': question['id'],
+                    'question': question['question'],
+                    'data_type': question['data_type'],
+                    'bm25_score': 0.0,
+                    'semantic_score': 0.0,
+                    'tfidf_score': 0.0,
+                    'combined_score': 0.0
+                })
         
         # Tìm similarity cao nhất
         max_similarity = max([s['combined_score'] for s in similarities], default=0.0)
@@ -234,7 +278,8 @@ class CoverageAnalyzer:
             'is_covered': is_covered,
             'max_similarity': max_similarity,
             'best_question': best_question,
-            'similarities': sorted(similarities, key=lambda x: x['combined_score'], reverse=True)[:3]  # Top 3
+            'similarities': sorted(similarities, key=lambda x: x['combined_score'], reverse=True)[:3],  # Top 3
+            'relevant_questions_count': len(relevant_questions)
         }
     
     def analyze_coverage(self) -> Dict[str, Any]:
@@ -252,16 +297,26 @@ class CoverageAnalyzer:
                 'units_analysis': []
             }
         
-        print("🔍 Bắt đầu phân tích coverage...")
+        print("🧠 Bắt đầu phân tích coverage với Hybrid Search (optimized - chỉ tính với relevant questions)...")
+        self.reset_stop_flag()  # Reset flag khi bắt đầu
         
         covered_count = 0
         units_analysis = []
+        total_relevant_questions = 0
         
         for i, unit in enumerate(self.text_units):
+            # Kiểm tra nếu được yêu cầu dừng
+            if self.should_stop:
+                print(f"🛑 Phân tích bị dừng tại unit {i + 1}/{len(self.text_units)}")
+                break
+                
             coverage_info = self.calculate_unit_coverage(unit)
             
             if coverage_info['is_covered']:
                 covered_count += 1
+            
+            # Track total relevant questions count
+            total_relevant_questions += coverage_info.get('relevant_questions_count', 0)
             
             unit_analysis = {
                 'unit_id': unit['id'],
@@ -275,20 +330,31 @@ class CoverageAnalyzer:
             units_analysis.append(unit_analysis)
             
             if (i + 1) % 10 == 0:
-                print(f"  📊 Đã phân tích {i + 1}/{len(self.text_units)} units...")
+                print(f"  📊 Đã phân tích {i + 1}/{len(self.text_units)} units... (relevant questions so far: {total_relevant_questions})")
         
-        coverage_percentage = (covered_count / len(self.text_units)) * 100
+        # Tính coverage dựa trên số unit đã xử lý
+        processed_units = len(units_analysis)
+        coverage_percentage = (covered_count / processed_units) * 100 if processed_units > 0 else 0
         
         result = {
             'total_units': len(self.text_units),
+            'processed_units': processed_units,
             'covered_units': covered_count,
-            'uncovered_units': len(self.text_units) - covered_count,
+            'uncovered_units': processed_units - covered_count,
             'coverage_percentage': coverage_percentage,
             'threshold_used': self.coverage_threshold,
+            'was_stopped': self.should_stop,
+            'total_questions': len(self.questions),
+            'total_relevant_calculations': total_relevant_questions,
+            'optimization_ratio': f"{total_relevant_questions}/{len(self.text_units) * len(self.questions)} ({(total_relevant_questions / (len(self.text_units) * len(self.questions)) * 100):.1f}%)",
             'units_analysis': units_analysis
         }
         
-        print(f"✅ Hoàn thành phân tích coverage: {coverage_percentage:.1f}% ({covered_count}/{len(self.text_units)} units)")
+        status_message = "🛑 Đã dừng" if self.should_stop else "✅ Hoàn thành"
+        print(f"{status_message} phân tích coverage: {coverage_percentage:.1f}% ({covered_count}/{processed_units} units đã xử lý)")
+        
+        if processed_units > 0:
+            print(f"🚀 Optimization: Tính {total_relevant_questions} similarities thay vì {processed_units * len(self.questions)} (tiết kiệm {((processed_units * len(self.questions) - total_relevant_questions) / (processed_units * len(self.questions)) * 100):.1f}%)")
         
         return result
     
@@ -322,59 +388,4 @@ class CoverageAnalyzer:
         
         return doc_stats
 
-def test_coverage_analyzer():
-    """Test function cho coverage analyzer"""
-    
-    # Mock data
-    documents = [
-        {
-            'id': 1,
-            'title': 'Luật test',
-            'content': '''Điều 1. Quy định chung về giao thông.
-            Giao thông đường bộ phải tuân theo luật pháp.
-            
-            Điều 2. Về độ tuổi lái xe.
-            Người lái xe phải đủ 18 tuổi trở lên.
-            Đối với xe mô tô thì từ 16 tuổi.'''
-        }
-    ]
-    
-    questions_data = [
-        {
-            'id': 1,
-            'data_type': 'word_matching',
-            'content': json.dumps({
-                'question': 'Độ tuổi tối thiểu để lái xe ô tô là bao nhiêu?',
-                'answer': '18 tuổi'
-            })
-        },
-        {
-            'id': 2,
-            'data_type': 'concept_understanding',
-            'content': json.dumps({
-                'question': 'Giao thông đường bộ cần tuân theo quy định gì?',
-                'answer': 'Tuân theo luật pháp'
-            })
-        }
-    ]
-    
-    # Test coverage
-    analyzer = CoverageAnalyzer(coverage_threshold=0.3)
-    analyzer.prepare_coverage_analysis(documents, questions_data, unit_type='sentence')
-    
-    result = analyzer.analyze_coverage()
-    
-    print(f"\n📊 COVERAGE ANALYSIS RESULT:")
-    print(f"Total units: {result['total_units']}")
-    print(f"Covered units: {result['covered_units']}")
-    print(f"Coverage: {result['coverage_percentage']:.1f}%")
-    
-    print(f"\n📋 DETAILED ANALYSIS:")
-    for unit in result['units_analysis'][:3]:  # Show first 3
-        print(f"Unit: {unit['content_preview']}")
-        print(f"  Covered: {unit['is_covered']} (similarity: {unit['max_similarity']:.3f})")
-        if unit['best_question']:
-            print(f"  Best match: {unit['best_question']['question'][:50]}...")
-
-if __name__ == "__main__":
-    test_coverage_analyzer()
+        return doc_stats

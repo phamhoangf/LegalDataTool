@@ -20,9 +20,10 @@ class LegalQA(BaseModel):
     question: str
     answer: str
 
-class LegalQAList(BaseModel):
-    """Danh sách câu hỏi-đáp án (không cần sources vì đã rule-based)"""
+class LegalQAResponse(BaseModel):
+    """Response chứa danh sách QA và sources chung"""
     qa_pairs: List[LegalQA]
+    sources: List[SourceReference]  # Sources chung cho tất cả QA
 
 class DataGenerator:
     """Class sinh dữ liệu huấn luyện cho LegalSLM - Version gọn gàng"""
@@ -240,7 +241,7 @@ class DataGenerator:
         print(f"📊 Tổng cộng: {len(all_articles)} điều từ {len(documents)} tài liệu")
 
         # Monte Carlo sampling
-        max_articles = min(len(all_articles), max(num_samples // 2, 10))
+        max_articles = min(len(all_articles), max(num_samples // 2, 5))
         selected_articles = self.monte_carlo_sample_articles(all_articles, max_articles)
         print(f"  🎯 Đã chọn {len(selected_articles)} articles")
 
@@ -261,10 +262,10 @@ class DataGenerator:
         
         # Xác định số sources
         num_sources_map = {
-            'word_matching': min(5, len(articles)),
-            'concept_understanding': min(5, len(articles)),
-            'multi_paragraph_reading': min(7, len(articles)),
-            'multi_hop_reasoning': min(10, len(articles))
+            'word_matching': min(3, len(articles)),
+            'concept_understanding': min(4, len(articles)), 
+            'multi_paragraph_reading': min(5, len(articles)),
+            'multi_hop_reasoning': min(6, len(articles))
         }
         num_sources = num_sources_map.get(data_type, min(3, len(articles)))
         
@@ -286,8 +287,7 @@ class DataGenerator:
                 document_title=article['document_title']
             )
             common_sources.append(source_ref)
-            article_path = article.get('path', article['title'])
-            combined_content.append(f"--- {article['title']} ({article_path}) ---\n{article['content']}")
+            combined_content.append(f"--- {article['title']} ---\n{article['content']}")
 
         combined_text = "\n\n".join(combined_content)
         
@@ -309,12 +309,12 @@ class DataGenerator:
                         top_p=random.uniform(0.85, 0.95),
                         max_output_tokens=3000,
                         response_mime_type="application/json",
-                        response_schema=LegalQAList,
+                        response_schema=LegalQAResponse,
                         seed=random.randint(1, 1000000)
                     )
                 )
                 
-                structured_data: LegalQAList = response.parsed
+                structured_data: LegalQAResponse = response.parsed
                 
                 # Convert với sources chung và rule-based difficulty
                 for qa_pair in structured_data.qa_pairs:
@@ -344,7 +344,7 @@ class DataGenerator:
         return all_samples
 
     def create_diverse_prompt(self, content, topic, data_type, difficulty, iteration):
-        """Hàm gốc tạo prompt đa dạng - sử dụng làm base cho các loại câu hỏi"""
+        """Tạo prompt đa dạng để tránh trùng lặp"""
         # Cấu trúc câu hỏi đa dạng
         question_starters = [
             "Khi nào", "Trong trường hợp nào", "Ai có trách nhiệm",
@@ -369,134 +369,29 @@ class DataGenerator:
         random.seed(hash(f"{data_type}_{iteration}_{topic}") % 10000)
         starter = random.choice(question_starters)
         focus = random.choice(focus_areas)
+        entropy_id = random.randint(1000, 9999)
         
         # Reset seed
         random.seed()
         
-        # Gọi hàm con tương ứng với data_type
-        if data_type == "word_matching":
-            return self.create_word_matching_prompt(content, topic, starter, focus, difficulty)
-        elif data_type == "concept_understanding":
-            return self.create_concept_understanding_prompt(content, topic, starter, focus, difficulty)
-        elif data_type == "multi_paragraph_reading":
-            return self.create_multi_paragraph_prompt(content, topic, starter, focus, difficulty)
-        elif data_type == "multihop":
-            return self.create_multihop_prompt(content, topic, starter, focus, difficulty)
-        else:
-            return self.create_concept_understanding_prompt(content, topic, starter, focus, difficulty)
-
-    def create_word_matching_prompt(self, content, topic, starter, focus, difficulty):
-        """Prompt cho loại Word Matching - tìm từ khóa, thuật ngữ cụ thể trong văn bản"""
         return f"""
 Dưới đây là các điều luật về chủ đề "{topic}":
 
 {content}
 
-Hãy tạo 1 câu hỏi loại WORD MATCHING (độ khó {difficulty}) tập trung vào {focus}.
-
-ĐẶC ĐIỂM CÂU HỎI WORD MATCHING:
-- Yêu cầu tìm từ khóa, thuật ngữ cụ thể trong văn bản
-- Hỏi về định nghĩa chính xác của các khái niệm pháp lý
-- Câu trả lời là từ/cụm từ xuất hiện trực tiếp trong văn bản
-- Tập trung vào thuật ngữ chuyên môn, số liệu cụ thể
+Hãy tạo 1 câu hỏi độ khó {difficulty} tập trung vào {focus}.
 
 YÊU CẦU QUAN TRỌNG:
-1. Hạn chế dùng "Theo Điều X của Luật..."
-2. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..." hoặc cấu trúc tương tự
+1. TUYỆT ĐỐI KHÔNG dùng cấu trúc "Theo Điều X của Luật..."
+2. Bắt đầu câu hỏi bằng "{starter}..." hoặc cấu trúc tương tự
 3. Câu hỏi phải độc lập, không nhắc đến tên điều luật cụ thể
-4. Đáp án phải là từ/cụm từ chính xác từ văn bản gốc
+4. Tập trung vào {focus}
+5. Entropy ID: {entropy_id} (để đảm bảo uniqueness)
 
-VÍ DỤ CÂU HỎI WORD MATCHING:
-- "Độ tuổi tối thiểu để được cấp bằng lái xe ô tô là?"
-- "Thuật ngữ nào được dùng để chỉ phương tiện không có động cơ?"
-- "Mức phạt tối đa cho vi phạm tốc độ là bao nhiêu?"
+VÍ DỤ CẤU TRÚC TỐT:
+- "Khi nào doanh nghiệp cần có giấy phép kinh doanh vận tải?"
+- "Việc vi phạm tốc độ tối đa sẽ bị xử phạt như thế nao?"
+- "Ai có trách nhiệm kiểm tra định kỳ phương tiện?"
 
-Trả về output dưới dạng JSON với qa_pairs.
-        """
-
-    def create_concept_understanding_prompt(self, content, topic, starter, focus, difficulty):
-        """Prompt cho loại Concept Understanding - hiểu khái niệm, nguyên tắc"""
-        return f"""
-Dưới đây là các điều luật về chủ đề "{topic}":
-
-{content}
-
-Hãy tạo 1 câu hỏi loại CONCEPT UNDERSTANDING (độ khó {difficulty}) tập trung vào {focus}.
-
-ĐẶC ĐIỂM CÂU HỎI CONCEPT UNDERSTANDING:
-- Kiểm tra hiểu biết về khái niệm, nguyên tắc pháp lý
-- Yêu cầu giải thích ý nghĩa, mục đích của quy định
-- Câu trả lời cần diễn giải, không chỉ trích dẫn nguyên văn
-- Tập trung vào việc hiểu "tại sao" và "như thế nào"
-
-YÊU CẦU QUAN TRỌNG:
-1. Hạn chế dùng "Theo Điều X của Luật..."
-2. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..." hoặc cấu trúc tương tự
-3. Câu hỏi phải độc lập, không nhắc đến tên điều luật cụ thể
-4. Đáp án cần giải thích khái niệm, không chỉ liệt kê
-
-VÍ DỤ CÂU HỎI CONCEPT UNDERSTANDING:
-- "Tại sao việc kiểm định định kỳ phương tiện là bắt buộc?"
-- "Nguyên tắc an toàn giao thông được thể hiện như thế nào?"
-- "Vì sao cần phân loại bằng lái xe theo từng hạng?"
-
-Trả về output dưới dạng JSON với qa_pairs.
-        """
-
-    def create_multi_paragraph_prompt(self, content, topic, starter, focus, difficulty):
-        """Prompt cho loại Multi-paragraph Reading - đọc hiểu nhiều đoạn văn"""
-        return f"""
-Dưới đây là các điều luật về chủ đề "{topic}":
-
-{content}
-
-Hãy tạo 1 câu hỏi loại MULTI-PARAGRAPH READING (độ khó {difficulty}) tập trung vào {focus}.
-
-ĐẶC ĐIỂM CÂU HỎI MULTI-PARAGRAPH READING:
-- Yêu cầu đọc và tổng hợp thông tin từ nhiều đoạn văn
-- So sánh, đối chiếu các quy định khác nhau
-- Tìm mối liên hệ giữa các điều khoản
-- Câu trả lời cần kết hợp thông tin từ nhiều nguồn trong văn bản
-
-YÊU CẦU QUAN TRỌNG:
-1. Hạn chế dùng "Theo Điều X của Luật..."
-2. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..." hoặc cấu trúc tương tự
-3. Câu hỏi phải độc lập, không nhắc đến tên điều luật cụ thể
-4. Đáp án phải tổng hợp từ nhiều phần khác nhau của văn bản
-
-VÍ DỤ CÂU HỎI MULTI-PARAGRAPH READING:
-- "So sánh quy định về bằng lái xe cho người dân thường và lực lượng vũ trang?"
-- "Các trường hợp được miễn phí đăng ký xe bao gồm những gì?"
-- "Quy trình xử phạt vi phạm giao thông khác nhau thế nào giữa các mức độ?"
-
-Trả về output dưới dạng JSON với qa_pairs.
-        """
-
-    def create_multihop_prompt(self, content, topic, starter, focus, difficulty):
-        """Prompt cho loại Multihop - suy luận qua nhiều bước"""
-        return f"""
-Dưới đây là các điều luật về chủ đề "{topic}":
-
-{content}
-
-Hãy tạo 1 câu hỏi loại MULTIHOP (độ khó {difficulty}) tập trung vào {focus}.
-
-ĐẶC ĐIỂM CÂU HỎI MULTIHOP:
-- Yêu cầu suy luận logic qua nhiều bước
-- Kết hợp nhiều quy định để đưa ra kết luận
-- Áp dụng quy tắc vào tình huống phức tạp, thực tế
-- Câu trả lời cần trải qua chuỗi suy luận có logic
-
-YÊU CẦU QUAN TRỌNG:
-1. Hạn chế dùng "Theo Điều X của Luật..."
-2. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..." hoặc cấu trúc tương tự
-3. Câu hỏi phải độc lập, không nhắc đến tên điều luật cụ thể
-4. Đáp án cần có chuỗi suy luận rõ ràng, không chỉ kết luận
-
-VÍ DỤ CÂU HỎI MULTIHOP:
-- "Trong trường hợp nào một doanh nghiệp vận tải có thể bị thu hồi giấy phép và phải làm gì để được cấp lại?"
-- "Làm cách nào để xác định mức phạt cụ thể cho một vi phạm giao thông có nhiều tình tiết tăng nặng?"
-- "Vì sao việc vận chuyển hàng nguy hiểm cần tuân thủ đồng thời nhiều quy định khác nhau?"
-
-Trả về output dưới dạng JSON với qa_pairs.
+Trả về JSON với qa_pairs và sources (để trống - sẽ được set ở code).
         """
