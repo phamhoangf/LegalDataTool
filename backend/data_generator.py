@@ -446,7 +446,7 @@ Trả về output dưới dạng JSON với qa_pairs.
     def create_multi_paragraph_prompt(self, content, topic, starter, focus, difficulty):
         """Prompt cho loại Multi-paragraph Reading - đọc hiểu nhiều đoạn văn"""
         return f"""
-Dưới đây là các điều luật về chủ đề "{topic}":
+Dưới đây là các điều luật về chủ đề "{topic}":S
 
 {content}
 
