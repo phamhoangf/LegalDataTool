@@ -4,10 +4,11 @@ import json
 import random
 import os
 import re
+import time
 from typing import List, Dict, Any
 from pydantic import BaseModel
 from similarity_checker import QuestionSimilarityChecker
-from legal_parser import LegalDocumentParser
+from document_parsers import LegalDocumentParser
 
 class SourceReference(BaseModel):
     """Tham chiếu đến nguồn của thông tin"""
@@ -37,7 +38,7 @@ class DataGenerator:
                 os.environ['GEMINI_API_KEY'] = google_key
         
         self.client = genai.Client()
-        self.model = "gemini-2.0-flash-exp"
+        self.model = "gemini-2.5-flash"
         
         # Khởi tạo similarity checker
         self.similarity_checker = QuestionSimilarityChecker(similarity_threshold=similarity_threshold)
@@ -261,10 +262,10 @@ class DataGenerator:
         
         # Xác định số sources
         num_sources_map = {
-            'word_matching': min(5, len(articles)),
-            'concept_understanding': min(5, len(articles)),
-            'multi_paragraph_reading': min(7, len(articles)),
-            'multi_hop_reasoning': min(10, len(articles))
+            'word_matching': min(1, len(articles)),
+            'concept_understanding': min(1, len(articles)),
+            'multi_paragraph_reading': min(2, len(articles)),
+            'multi_hop_reasoning': min(3, len(articles))
         }
         num_sources = num_sources_map.get(data_type, min(3, len(articles)))
         
@@ -294,58 +295,115 @@ class DataGenerator:
         # Rule-based difficulty
         difficulty = self.get_rule_based_difficulty(data_type, len(selected_articles))
         
-        # Tạo câu hỏi
-        all_samples = []
-        for i in range(num_samples):
-            prompt = self.create_diverse_prompt(combined_text, topic, data_type, difficulty, i)
-            
-            try:
-                temperature = random.uniform(0.6, 0.9)
-                response = self.client.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=temperature,
-                        top_p=random.uniform(0.85, 0.95),
-                        max_output_tokens=3000,
-                        response_mime_type="application/json",
-                        response_schema=LegalQAList,
-                        seed=random.randint(1, 1000000)
-                    )
-                )
-                
-                structured_data: LegalQAList = response.parsed
-                
-                # Convert với sources chung và rule-based difficulty
-                for qa_pair in structured_data.qa_pairs:
-                    sample = {
-                        'question': qa_pair.question,
-                        'answer': qa_pair.answer,
-                        'difficulty': difficulty,  # Rule-based, không từ LLM
-                        'sources': [
-                            {
-                                'article_number': src.article_number,
-                                'article_title': src.article_title,
-                                'document_title': src.document_title
-                            } for src in common_sources  # Sources chung
-                        ],
-                        'metadata': {
-                            'generation_method': 'clean_multi_source',
-                            'num_sources': len(selected_articles),
-                            'temperature': temperature
-                        }
-                    }
-                    all_samples.append(sample)
-                    
-            except Exception as e:
-                print(f"❌ Generation failed for sample {i+1}: {e}")
-                continue
+        # Tạo một prompt batch để sinh nhiều câu hỏi cùng lúc
+        prompt = self.create_batch_prompt(combined_text, topic, data_type, difficulty, num_samples)
         
-        return all_samples
+        try:
+            temperature = random.uniform(0.6, 0.9)
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=temperature,
+                    top_p=random.uniform(0.85, 0.95),
+                    max_output_tokens=5000,  # Tăng token limit cho batch
+                    response_mime_type="application/json",
+                    response_schema=LegalQAList,
+                    seed=random.randint(1, 1000000)
+                )
+            )
+            
+            structured_data: LegalQAList = response.parsed
+            
+            # Convert với sources chung và rule-based difficulty
+            all_samples = []
+            for qa_pair in structured_data.qa_pairs:
+                sample = {
+                    'question': qa_pair.question,
+                    'answer': qa_pair.answer,
+                    'difficulty': difficulty,  # Rule-based, không từ LLM
+                    'sources': [
+                        {
+                            'article_number': src.article_number,
+                            'article_title': src.article_title,
+                            'document_title': src.document_title
+                        } for src in common_sources  # Sources chung
+                    ],
+                    'metadata': {
+                        'generation_method': 'batch_prompt',
+                        'num_sources': len(selected_articles),
+                        'temperature': temperature
+                    }
+                }
+                all_samples.append(sample)
+            
+            print(f"Tạo được {len(all_samples)} câu hỏi từ batch prompt")
+            return all_samples
+            
+        except Exception as e:
+            print(f"Lỗi tạo batch questions: {e}")
+            return []
 
-    def create_diverse_prompt(self, content, topic, data_type, difficulty, iteration):
-        """Hàm gốc tạo prompt đa dạng - sử dụng làm base cho các loại câu hỏi"""
-        # Cấu trúc câu hỏi đa dạng
+    def create_batch_prompt(self, content, topic, data_type, difficulty, num_samples):
+        """Tạo prompt để sinh nhiều câu hỏi cùng lúc với các hướng khác nhau"""
+        # Tạo instructions đa dạng với randomization tốt hơn
+        instructions = self._generate_diverse_instructions(num_samples, data_type)
+        
+        # Gọi hàm tạo prompt theo loại data_type
+        if data_type == "word_matching":
+            return self._create_batch_prompt_template(
+                content, topic, data_type, difficulty, num_samples, instructions,
+                characteristics="""ĐẶC ĐIỂM CÂU HỎI WORD MATCHING:
+- Yêu cầu tìm từ khóa, thuật ngữ cụ thể trong văn bản
+- Hỏi về định nghĩa chính xác của các khái niệm pháp lý  
+- Câu trả lời là từ/cụm từ xuất hiện trực tiếp trong văn bản
+- Tập trung vào thuật ngữ chuyên môn, số liệu cụ thể""",
+                requirements="""4. Đáp án phải là diễn giải đầy đủ phần từ/cụm từ câu hỏi yêu cầu, chính xác từ văn bản gốc"""
+            )
+        elif data_type == "concept_understanding":
+            return self._create_batch_prompt_template(
+                content, topic, data_type, difficulty, num_samples, instructions,
+                characteristics="""ĐẶC ĐIỂM CÂU HỎI CONCEPT UNDERSTANDING:
+- Kiểm tra hiểu biết về khái niệm, nguyên tắc pháp lý
+- Yêu cầu giải thích ý nghĩa, mục đích của quy định
+- Câu trả lời cần diễn giải, không chỉ trích dẫn nguyên văn
+- Tập trung vào việc hiểu "tại sao" và "như thế nào" """,
+                requirements="""4. Đáp án cần giải thích khái niệm, không chỉ liệt kê"""
+            )
+        elif data_type == "multi_paragraph_reading":
+            return self._create_batch_prompt_template(
+                content, topic, data_type, difficulty, num_samples, instructions,
+                characteristics="""ĐẶC ĐIỂM CÂU HỎI MULTI-PARAGRAPH READING:
+- Yêu cầu đọc và tổng hợp thông tin từ nhiều đoạn văn
+- So sánh, đối chiếu các quy định khác nhau
+- Tìm mối liên hệ giữa các điều khoản
+- Câu trả lời cần kết hợp thông tin từ nhiều nguồn trong văn bản""",
+                requirements="""4. Đáp án phải tổng hợp thông tin từ nhiều phần khác nhau của văn bản"""
+            )
+        elif data_type == "multihop":
+            return self._create_batch_prompt_template(
+                content, topic, data_type, difficulty, num_samples, instructions,
+                characteristics="""ĐẶC ĐIỂM CÂU HỎI MULTIHOP:
+- Yêu cầu suy luận logic qua nhiều bước
+- Kết hợp nhiều quy định để đưa ra kết luận
+- Áp dụng quy tắc vào tình huống phức tạp, thực tế
+- Câu trả lời cần trải qua chuỗi suy luận có logic""",
+                requirements="""4. Đáp án cần có chuỗi suy luận rõ ràng, không chỉ kết luận"""
+            )
+        else:
+            # Default to concept understanding
+            return self._create_batch_prompt_template(
+                content, topic, "concept_understanding", difficulty, num_samples, instructions,
+                characteristics="""ĐẶC ĐIỂM CÂU HỎI CONCEPT UNDERSTANDING:
+- Kiểm tra hiểu biết về khái niệm, nguyên tắc pháp lý
+- Yêu cầu giải thích ý nghĩa, mục đích của quy định
+- Câu trả lời cần diễn giải, không chỉ trích dẫn nguyên văn
+- Tập trung vào việc hiểu "tại sao" và "như thế nào" """,
+                requirements="""4. Đáp án cần giải thích khái niệm, không chỉ liệt kê"""
+            )
+    
+    def _generate_diverse_instructions(self, num_samples, data_type):
+        """Tạo instructions đa dạng với randomization tốt hơn"""
         question_starters = [
             "Khi nào", "Trong trường hợp nào", "Ai có trách nhiệm",
             "Việc...được thực hiện như thế nào", "Điều kiện...là gì",
@@ -365,138 +423,56 @@ class DataGenerator:
             "thẩm quyền và trách nhiệm quản lý"
         ]
         
-        # Random selection với seed từ iteration để tạo diversity
-        random.seed(hash(f"{data_type}_{iteration}_{topic}") % 10000)
-        starter = random.choice(question_starters)
-        focus = random.choice(focus_areas)
+        # Đảm bảo randomization tốt với seed từ thời gian hiện tại
+        import time
+        random.seed(int(time.time() * 1000) % 10000)
         
-        # Reset seed
+        # Shuffle để tăng tính ngẫu nhiên
+        random.shuffle(question_starters)
+        random.shuffle(focus_areas)
+        
+        # Tạo các cặp starter-focus ngẫu nhiên và không trùng lặp
+        instructions = []
+        used_combinations = set()
+        
+        for i in range(num_samples):
+            # Thử tìm combination chưa được sử dụng
+            attempts = 0
+            while attempts < 20:  # Tránh vòng lặp vô hạn
+                starter = random.choice(question_starters)
+                focus = random.choice(focus_areas)
+                combination = (starter, focus)
+                
+                if combination not in used_combinations or len(used_combinations) >= len(question_starters) * len(focus_areas):
+                    used_combinations.add(combination)
+                    instructions.append(f"Câu {i+1}: Bắt đầu bằng \"{starter}...\" và tập trung vào \"{focus}\"")
+                    break
+                attempts += 1
+        
+        # Reset seed để không ảnh hưởng các random khác
         random.seed()
         
-        # Gọi hàm con tương ứng với data_type
-        if data_type == "word_matching":
-            return self.create_word_matching_prompt(content, topic, starter, focus, difficulty)
-        elif data_type == "concept_understanding":
-            return self.create_concept_understanding_prompt(content, topic, starter, focus, difficulty)
-        elif data_type == "multi_paragraph_reading":
-            return self.create_multi_paragraph_prompt(content, topic, starter, focus, difficulty)
-        elif data_type == "multihop":
-            return self.create_multihop_prompt(content, topic, starter, focus, difficulty)
-        else:
-            return self.create_concept_understanding_prompt(content, topic, starter, focus, difficulty)
-
-    def create_word_matching_prompt(self, content, topic, starter, focus, difficulty):
-        """Prompt cho loại Word Matching - tìm từ khóa, thuật ngữ cụ thể trong văn bản"""
+        return "\n".join(instructions)
+    
+    def _create_batch_prompt_template(self, content, topic, data_type, difficulty, num_samples, instructions, characteristics, requirements):
+        """Template chung cho tất cả các loại batch prompt"""
         return f"""
 Dưới đây là các điều luật về chủ đề "{topic}":
 
 {content}
 
-Hãy tạo 1 câu hỏi loại WORD MATCHING (độ khó {difficulty}) tập trung vào {focus}.
+Hãy tạo {num_samples} câu hỏi loại {data_type.upper()} (độ khó {difficulty}) theo hướng dẫn:
 
-ĐẶC ĐIỂM CÂU HỎI WORD MATCHING:
-- Yêu cầu tìm từ khóa, thuật ngữ cụ thể trong văn bản
-- Hỏi về định nghĩa chính xác của các khái niệm pháp lý
-- Câu trả lời là từ/cụm từ xuất hiện trực tiếp trong văn bản
-- Tập trung vào thuật ngữ chuyên môn, số liệu cụ thể
+{instructions}
+
+{characteristics}
 
 YÊU CẦU QUAN TRỌNG:
-1. Hạn chế dùng "Theo Điều X của Luật..."
-2. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..." hoặc cấu trúc tương tự
-3. Câu hỏi phải độc lập, không nhắc đến tên điều luật cụ thể
-4. Đáp án phải là từ/cụm từ chính xác từ văn bản gốc
-
-VÍ DỤ CÂU HỎI WORD MATCHING:
-- "Độ tuổi tối thiểu để được cấp bằng lái xe ô tô là?"
-- "Thuật ngữ nào được dùng để chỉ phương tiện không có động cơ?"
-- "Mức phạt tối đa cho vi phạm tốc độ là bao nhiêu?"
-
-Trả về output dưới dạng JSON với qa_pairs.
-        """
-
-    def create_concept_understanding_prompt(self, content, topic, starter, focus, difficulty):
-        """Prompt cho loại Concept Understanding - hiểu khái niệm, nguyên tắc"""
-        return f"""
-Dưới đây là các điều luật về chủ đề "{topic}":
-
-{content}
-
-Hãy tạo 1 câu hỏi loại CONCEPT UNDERSTANDING (độ khó {difficulty}) tập trung vào {focus}.
-
-ĐẶC ĐIỂM CÂU HỎI CONCEPT UNDERSTANDING:
-- Kiểm tra hiểu biết về khái niệm, nguyên tắc pháp lý
-- Yêu cầu giải thích ý nghĩa, mục đích của quy định
-- Câu trả lời cần diễn giải, không chỉ trích dẫn nguyên văn
-- Tập trung vào việc hiểu "tại sao" và "như thế nào"
-
-YÊU CẦU QUAN TRỌNG:
-1. Hạn chế dùng "Theo Điều X của Luật..."
-2. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..." hoặc cấu trúc tương tự
-3. Câu hỏi phải độc lập, không nhắc đến tên điều luật cụ thể
-4. Đáp án cần giải thích khái niệm, không chỉ liệt kê
-
-VÍ DỤ CÂU HỎI CONCEPT UNDERSTANDING:
-- "Tại sao việc kiểm định định kỳ phương tiện là bắt buộc?"
-- "Nguyên tắc an toàn giao thông được thể hiện như thế nào?"
-- "Vì sao cần phân loại bằng lái xe theo từng hạng?"
-
-Trả về output dưới dạng JSON với qa_pairs.
-        """
-
-    def create_multi_paragraph_prompt(self, content, topic, starter, focus, difficulty):
-        """Prompt cho loại Multi-paragraph Reading - đọc hiểu nhiều đoạn văn"""
-        return f"""
-Dưới đây là các điều luật về chủ đề "{topic}":S
-
-{content}
-
-Hãy tạo 1 câu hỏi loại MULTI-PARAGRAPH READING (độ khó {difficulty}) tập trung vào {focus}.
-
-ĐẶC ĐIỂM CÂU HỎI MULTI-PARAGRAPH READING:
-- Yêu cầu đọc và tổng hợp thông tin từ nhiều đoạn văn
-- So sánh, đối chiếu các quy định khác nhau
-- Tìm mối liên hệ giữa các điều khoản
-- Câu trả lời cần kết hợp thông tin từ nhiều nguồn trong văn bản
-
-YÊU CẦU QUAN TRỌNG:
-1. Hạn chế dùng "Theo Điều X của Luật..."
-2. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..." hoặc cấu trúc tương tự
-3. Câu hỏi phải độc lập, không nhắc đến tên điều luật cụ thể
-4. Đáp án phải tổng hợp từ nhiều phần khác nhau của văn bản
-
-VÍ DỤ CÂU HỎI MULTI-PARAGRAPH READING:
-- "So sánh quy định về bằng lái xe cho người dân thường và lực lượng vũ trang?"
-- "Các trường hợp được miễn phí đăng ký xe bao gồm những gì?"
-- "Quy trình xử phạt vi phạm giao thông khác nhau thế nào giữa các mức độ?"
-
-Trả về output dưới dạng JSON với qa_pairs.
-        """
-
-    def create_multihop_prompt(self, content, topic, starter, focus, difficulty):
-        """Prompt cho loại Multihop - suy luận qua nhiều bước"""
-        return f"""
-Dưới đây là các điều luật về chủ đề "{topic}":
-
-{content}
-
-Hãy tạo 1 câu hỏi loại MULTIHOP (độ khó {difficulty}) tập trung vào {focus}.
-
-ĐẶC ĐIỂM CÂU HỎI MULTIHOP:
-- Yêu cầu suy luận logic qua nhiều bước
-- Kết hợp nhiều quy định để đưa ra kết luận
-- Áp dụng quy tắc vào tình huống phức tạp, thực tế
-- Câu trả lời cần trải qua chuỗi suy luận có logic
-
-YÊU CẦU QUAN TRỌNG:
-1. Hạn chế dùng "Theo Điều X của Luật..."
-2. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..." hoặc cấu trúc tương tự
-3. Câu hỏi phải độc lập, không nhắc đến tên điều luật cụ thể
-4. Đáp án cần có chuỗi suy luận rõ ràng, không chỉ kết luận
-
-VÍ DỤ CÂU HỎI MULTIHOP:
-- "Trong trường hợp nào một doanh nghiệp vận tải có thể bị thu hồi giấy phép và phải làm gì để được cấp lại?"
-- "Làm cách nào để xác định mức phạt cụ thể cho một vi phạm giao thông có nhiều tình tiết tăng nặng?"
-- "Vì sao việc vận chuyển hàng nguy hiểm cần tuân thủ đồng thời nhiều quy định khác nhau?"
+1. Tạo đúng {num_samples} câu hỏi theo hướng dẫn trên
+2. Hạn chế dùng "Theo Điều X của Luật..."
+3. Câu hỏi phải độc lập, nếu cần tham chiếu thì phải trình bày nội dung cụ thể, tránh nói luật này luật kia, luật số bao nhiêu...
+{requirements}
+5. Mỗi câu hỏi phải khác biệt và tập trung vào khía cạnh riêng
 
 Trả về output dưới dạng JSON với qa_pairs.
         """

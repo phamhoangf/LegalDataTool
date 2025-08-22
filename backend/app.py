@@ -8,7 +8,7 @@ import jsonlines
 from datetime import datetime
 from data_generator import DataGenerator
 from coverage_analyzer import CoverageAnalyzer
-from legal_parser import LegalDocumentParser
+from document_parsers import LegalDocumentParser
 from models import db, LegalTopic, LegalDocument, TopicDocument, GeneratedData, LabeledData
 
 # Load .env file từ parent directory

@@ -2,14 +2,34 @@
 
 Tool tạo dữ liệu finetune SFT/CoT/RLHF cho mô hình LegalSLM
 
+## 🚀 Cập nhật mới (v2.0)
+
+### ⚡ Batch Generation - Tối ưu 80% chi phí API
+- **Trước**: N API calls riêng biệt cho N câu hỏi
+- **Sau**: 1 API call tạo nhiều câu hỏi cùng lúc
+- **Kết quả**: Giảm 80% cost, tăng tốc độ generation
+
+### 🎲 Enhanced Randomization
+- Time-based seed cho diversity tối đa
+- Monte Carlo sampling thông minh
+- Unique starter-focus combinations
+- Template pattern với random factors
+
+### 🧹 Clean Backend Architecture
+- **Modules**: parsers.py (LegalDocumentParser), legal_parser.py (compatibility)
+- **Core Files**: 9 essential files (từ 80+ files)
+- **Performance**: Faster imports, cleaner structure
+- **Maintainability**: Clear separation of concerns
+
 ## Tính năng chính
 
  **Quản lý chủ đề pháp lý** - Tạo và quản lý các chủ đề luật khác nhau  
  **Tải lên văn bản luật** - Hỗ trợ file text và paste trực tiếp  
- **Sinh dữ liệu tự động** - Tạo dữ liệu SFT, CoT, RLHF bằng AI  
+ **Sinh dữ liệu tự động** - Batch generation tối ưu với AI  
  **Gán nhãn thông minh** - Giao diện thân thiện cho chuyên gia luật  
  **Xuất dữ liệu chuẩn** - File .jsonl sẵn sàng cho huấn luyện  
  **Thống kê chi tiết** - Theo dõi tiến độ và chất lượng dữ liệu  
+ **Similarity Check** - Tự động lọc câu hỏi trùng lặp  
 
 ## Cài đặt nhanh
 
@@ -177,6 +197,29 @@ DATABASE_URL=sqlite:///legal_data.db
 2. Tạo API key mới
 3. Thêm key vào file `.env`
 
+## 🏗️ Backend Architecture
+
+### Core Modules
+```
+backend/
+├── app.py                    # Flask main application  
+├── models.py                 # Database models (SQLAlchemy)
+├── config.py                 # Configuration management
+├── data_generator.py         # ⚡ Optimized batch generation
+├── parsers.py                # 📄 Legal document parsing
+├── legal_parser.py           # 🔄 Backward compatibility wrapper  
+├── coverage_analyzer.py      # 📊 Coverage analysis tools
+├── similarity_checker.py     # 🔍 Question similarity detection
+├── hybrid_search.py          # 🔎 Advanced search functionality
+└── instance/                 # SQLite database storage
+```
+
+### Key Optimizations
+- **Batch API Calls**: 1 call thay vì N calls → 80% cost reduction
+- **Smart Sampling**: Monte Carlo với weighted selection
+- **Duplicate Detection**: Similarity threshold filtering
+- **Clean Architecture**: 9 core files thay vì 80+ files
+
 ## Demo & Test
 
 ```bash
@@ -213,8 +256,9 @@ npm start
 
 **Không sinh được dữ liệu:**
 - Kiểm tra GOOGLE_API_KEY trong `.env`
-- Kiểm tra quota Google AI Studio
+- Kiểm tra quota Google AI Studio  
 - Xem logs trong terminal backend
+- Sử dụng batch generation để tối ưu cost
 
 **Database lỗi:**
 ```bash

@@ -1,24 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Legal Document Parser for DataTool
-Parse Vietnamese legal document        # Tính toán thống kê cuối cùng
-        document_structure['total_articles'] = article_count
-        document_structure['metadata']['parsing_stats'] = {
-            'chapters': len(document_structure.get('chapters', [])),
-            'total_sections': self._count_sections(document_structure),
-            'articles': article_count
-        }
-        
-        # Thêm list tất cả articles vào structure để sử dụng cho Monte Carlo
-        document_structure['articles'] = self.get_all_articles(document_structure)
-        
-        print(f"✅ Parsed successfully:")
-        print(f"   📚 Chapters: {document_structure['metadata']['parsing_stats']['chapters']}")
-        print(f"   📋 Sections: {document_structure['metadata']['parsing_stats']['total_sections']}")
-        print(f"   📜 Articles: {document_structure['metadata']['parsing_stats']['articles']}")
-        
-        return document_structurehical JSON structure
+Legal Document Parser Module
+Chứa các class và function để parse văn bản pháp luật thành cấu trúc JSON
 """
 
 import re
@@ -27,7 +11,7 @@ import random
 from typing import Dict, List, Any
 
 class LegalDocumentParser:
-    """Parse văn bản pháp luật thành cấu trúc hierarchical"""
+    """Parse văn bản pháp luật thành cấu trúc hierarchical JSON"""
     
     def __init__(self):
         # Patterns để nhận diện các cấp độ
@@ -116,14 +100,14 @@ class LegalDocumentParser:
                 current_article = None
                 document_structure['metadata']['has_sections'] = True
                 continue
-            
+                
             # 3. Kiểm tra ĐIỀU
             article_match = re.match(self.patterns['dieu'], line, re.IGNORECASE)
             if article_match:
                 current_article = self._create_article(article_match, i, lines)
                 article_count += 1
                 
-                # Gán article vào đúng container
+                # Xác định article này thuộc về đâu
                 if current_section:
                     current_section['articles'].append(current_article)
                 elif current_chapter:
@@ -135,7 +119,7 @@ class LegalDocumentParser:
                     document_structure['independent_articles'].append(current_article)
                 continue
         
-        # Finalize document
+        # Tính toán thống kê cuối cùng
         document_structure['total_articles'] = article_count
         document_structure['metadata']['parsing_stats'] = {
             'chapters': len(document_structure.get('chapters', [])),
@@ -152,169 +136,218 @@ class LegalDocumentParser:
         print(f"   📜 Articles: {document_structure['metadata']['parsing_stats']['articles']}")
         
         return document_structure
-    
+
     def _clean_content(self, content: str) -> str:
-        """Làm sạch content"""
-        # Chỉ remove extra spaces trên cùng một dòng, giữ nguyên newlines
-        lines = content.split('\n')
-        cleaned_lines = [re.sub(r'[ \t]+', ' ', line.strip()) for line in lines]
-        return '\n'.join(cleaned_lines)
-    
+        """Làm sạch nội dung văn bản"""
+        # Loại bỏ các ký tự thừa
+        content = re.sub(r'\r\n', '\n', content)
+        content = re.sub(r'\r', '\n', content)
+        return content
+
     def _create_chapter(self, match, line_num: int, chapter_title: str = "") -> Dict[str, Any]:
-        """Tạo chapter object"""
-        chapter_num = match.group(1)
+        """Tạo structure cho chương"""
+        number = match.group(1)
+        title = match.group(2).strip() or chapter_title
         
         return {
             'type': 'chapter',
-            'number': chapter_num,
-            'title': chapter_title,
+            'number': number,
+            'title': title,
             'line_number': line_num,
             'sections': [],
-            'articles': []
+            'articles': []  # Articles trực tiếp thuộc chapter (không thuộc section)
         }
-    
+
     def _create_section(self, match, line_num: int) -> Dict[str, Any]:
-        """Tạo section object"""
-        section_num = int(match.group(1))
-        section_title = match.group(2).strip()
+        """Tạo structure cho mục"""
+        number = match.group(1)
+        title = match.group(2).strip()
         
         return {
             'type': 'section',
-            'number': section_num,
-            'title': section_title,
+            'number': number,
+            'title': title,
             'line_number': line_num,
             'articles': []
         }
-    
+
     def _create_article(self, match, line_num: int, all_lines: List[str]) -> Dict[str, Any]:
-        """Tạo article object với full content"""
-        article_num = int(match.group(1))
-        article_title = match.group(2).strip()
+        """Tạo structure cho điều"""
+        number = match.group(1)
+        title = match.group(2).strip()
         
-        # Lấy full content của article
+        # Extract content cho article này
         content = self._extract_article_content(line_num, all_lines)
         
-        # Parse thành paragraphs
+        # Parse paragraphs
         paragraphs = self._parse_paragraphs(content)
         
         return {
             'type': 'article',
-            'number': article_num,
-            'title': article_title,
+            'number': number,
+            'title': title,
             'line_number': line_num,
             'content': content,
             'content_length': len(content),
-            'paragraphs': paragraphs
+            'paragraphs': paragraphs,
+            'paragraph_count': len(paragraphs)
         }
-    
+
     def _extract_article_content(self, start_line: int, all_lines: List[str]) -> str:
-        """Trích xuất full content của một điều"""
+        """Extract nội dung của một article"""
         content_lines = []
         
-        # Bắt đầu từ line hiện tại
+        # Bắt đầu từ dòng hiện tại (header của article)
         for i in range(start_line, len(all_lines)):
             line = all_lines[i].strip()
             
-            # Dừng khi gặp điều tiếp theo
-            if i > start_line and re.match(self.patterns['dieu'], line, re.IGNORECASE):
-                break
-            # Dừng khi gặp chương mới
-            if i > start_line and re.match(self.patterns['chuong'], line, re.IGNORECASE):
-                break
-            # Dừng khi gặp mục mới  
-            if i > start_line and re.match(self.patterns['muc'], line, re.IGNORECASE):
-                break
-                
-            if line:
-                content_lines.append(line)
+            # Stop khi gặp article tiếp theo, chapter, hoặc section
+            if i > start_line:  # Skip dòng đầu (header)
+                if (re.match(self.patterns['dieu'], line, re.IGNORECASE) or
+                    re.match(self.patterns['chuong'], line, re.IGNORECASE) or
+                    re.match(self.patterns['muc'], line, re.IGNORECASE)):
+                    break
+            
+            content_lines.append(line)
         
-        return ' '.join(content_lines)
-    
+        return '\n'.join(content_lines)
+
     def _parse_paragraphs(self, content: str) -> List[str]:
-        """Parse content thành paragraphs"""
-        # Split theo số thứ tự (1., 2., 3., ...)
-        paragraphs = re.split(r'\s+(?=\d+\.)', content)
-        return [p.strip() for p in paragraphs if p.strip()]
-    
+        """Parse content thành các paragraphs"""
+        lines = content.split('\n')
+        paragraphs = []
+        
+        current_paragraph = []
+        for line in lines:
+            line = line.strip()
+            if line:
+                current_paragraph.append(line)
+            else:
+                if current_paragraph:
+                    paragraphs.append(' '.join(current_paragraph))
+                    current_paragraph = []
+        
+        # Thêm paragraph cuối nếu có
+        if current_paragraph:
+            paragraphs.append(' '.join(current_paragraph))
+        
+        return paragraphs
+
     def _count_sections(self, document: Dict[str, Any]) -> int:
-        """Đếm tổng số sections"""
+        """Đếm tổng số sections trong document"""
         total = 0
         
-        # Sections in chapters
+        # Đếm sections trong các chapters
         for chapter in document.get('chapters', []):
             total += len(chapter.get('sections', []))
         
-        # Independent sections
+        # Đếm independent sections
         total += len(document.get('independent_sections', []))
         
         return total
-    
+
     def get_all_articles(self, document: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Lấy tất cả articles từ document structure (for Monte Carlo sampling)"""
-        articles = []
-        document_title = document.get('title', 'Document')
+        """
+        Extract tất cả articles từ document để sử dụng cho Monte Carlo sampling
         
-        # Articles in chapters
-        for chapter in document.get('chapters', []):
-            chapter_name = f"Chương {chapter['number']}: {chapter['title']}" if chapter['title'] else f"Chương {chapter['number']}"
+        Args:
+            document: Document structure đã parse
             
-            # Articles trực tiếp thuộc chapter
+        Returns:
+            List of all articles with metadata
+        """
+        articles = []
+        
+        # Articles trong chapters và sections
+        for chapter in document.get('chapters', []):
+            chapter_path = f"Chương {chapter['number']}"
+            
+            # Articles trực tiếp trong chapter
             for article in chapter.get('articles', []):
-                article_info = {
+                articles.append({
                     'number': article['number'],
                     'title': article['title'],
                     'content': article['content'],
                     'content_length': article['content_length'],
-                    'path': f"{document_title}, {chapter_name}"
-                }
-                articles.append(article_info)
+                    'path': f"{chapter_path}/Điều {article['number']}",
+                    'location': {
+                        'chapter': chapter['number'],
+                        'section': None
+                    },
+                    'metadata': {
+                        'line_number': article['line_number'],
+                        'paragraph_count': article.get('paragraph_count', 0)
+                    }
+                })
             
             # Articles trong sections của chapter
             for section in chapter.get('sections', []):
-                section_name = f"Mục {section['number']}: {section['title']}"
+                section_path = f"{chapter_path}/Mục {section['number']}"
+                
                 for article in section.get('articles', []):
-                    article_info = {
+                    articles.append({
                         'number': article['number'],
                         'title': article['title'],
                         'content': article['content'],
                         'content_length': article['content_length'],
-                        'path': f"{document_title}, {chapter_name}, {section_name}"
-                    }
-                    articles.append(article_info)
+                        'path': f"{section_path}/Điều {article['number']}",
+                        'location': {
+                            'chapter': chapter['number'],
+                            'section': section['number']
+                        },
+                        'metadata': {
+                            'line_number': article['line_number'],
+                            'paragraph_count': article.get('paragraph_count', 0)
+                        }
+                    })
         
         # Independent sections
         for section in document.get('independent_sections', []):
-            section_name = f"Mục {section['number']}: {section['title']}"
+            section_path = f"Mục {section['number']}"
+            
             for article in section.get('articles', []):
-                article_info = {
+                articles.append({
                     'number': article['number'],
                     'title': article['title'],
                     'content': article['content'],
                     'content_length': article['content_length'],
-                    'path': f"{document_title}, {section_name}"
-                }
-                articles.append(article_info)
+                    'path': f"{section_path}/Điều {article['number']}",
+                    'location': {
+                        'chapter': None,
+                        'section': section['number']
+                    },
+                    'metadata': {
+                        'line_number': article['line_number'],
+                        'paragraph_count': article.get('paragraph_count', 0)
+                    }
+                })
         
         # Independent articles
         for article in document.get('independent_articles', []):
-            article_info = {
+            articles.append({
                 'number': article['number'],
                 'title': article['title'],
                 'content': article['content'],
                 'content_length': article['content_length'],
-                'path': f"{document_title}"
-            }
-            articles.append(article_info)
+                'path': f"Điều {article['number']}",
+                'location': {
+                    'chapter': None,
+                    'section': None
+                },
+                'metadata': {
+                    'line_number': article['line_number'],
+                    'paragraph_count': article.get('paragraph_count', 0)
+                }
+            })
         
         return articles
-    
+
     def monte_carlo_sample_articles(self, articles: List[Dict[str, Any]], sample_size: int) -> List[Dict[str, Any]]:
         """
-        Monte Carlo sampling for articles - completely random selection
-        Ensures fair coverage over multiple generations
+        Monte Carlo sampling cho articles
         
         Args:
-            articles: List of all available articles
+            articles: List of articles to sample from
             sample_size: Number of articles to select
             
         Returns:
