@@ -1,3 +1,5 @@
+
+# ----------- CRAWL LAW DOCUMENT API -----------
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
@@ -5,6 +7,9 @@ from dotenv import load_dotenv
 import os
 import json
 import jsonlines
+import asyncio
+import aiohttp
+from bs4 import BeautifulSoup
 from datetime import datetime
 from data_generator import DataGenerator
 from coverage_analyzer import CoverageAnalyzer
@@ -25,6 +30,7 @@ db.init_app(app)
 # Initialize data generator with Google API key and similarity threshold
 google_api_key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
 data_generator = DataGenerator(api_key=google_api_key, similarity_threshold=0.75)
+
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -114,6 +120,91 @@ def delete_topic(topic_id):
     return jsonify({
         'message': 'Chủ đề đã được xóa thành công'
     })
+
+    # ----------- ASYNC CRAWL UTILS -----------
+TIMEOUT_SECONDS = 20
+MAX_CONCURRENT_REQUESTS = 15
+
+async def fetch_and_parse(session, url, semaphore):
+    """Tải và phân tích một trang văn bản duy nhất với nhiều selector fallback."""
+    async with semaphore:
+        try:
+            async with session.get(url, timeout=TIMEOUT_SECONDS) as response:
+                response.raise_for_status()
+                html = await response.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                # Fallback selector logic
+                selectors = [
+                    ('div', {'itemprop': 'articleBody'}),
+                    ('div', {'id': 'content'}),
+                    ('article', {}),
+                    ('div', {'class': 'main-content'}),
+                    ('div', {'class': 'content'}),
+                ]
+                for tag, attrs in selectors:
+                    found = soup.find(tag, attrs=attrs)
+                    if found and found.get_text(strip=True):
+                        return found.get_text(separator='\n', strip=True), None
+                # Nếu không tìm thấy, lấy toàn bộ body
+                body = soup.find('body')
+                if body and body.get_text(strip=True):
+                    return body.get_text(separator='\n', strip=True), "Đã lấy toàn bộ <body> do không tìm thấy selector đặc biệt."
+                return None, "Không tìm thấy nội dung phù hợp trên trang (đã thử nhiều selector)."
+        except Exception as e:
+            return None, f"Lỗi khi crawl: {str(e)}"
+@app.route('/api/crawl-law-document', methods=['POST'])
+def crawl_law_document():
+    """Crawl nội dung văn bản luật từ web, lưu thành document và liên kết với topic nếu có."""
+    data = request.get_json()
+    url = data.get('url')
+    topic_id = data.get('topic_id')
+    title = data.get('title')
+    if not url:
+        return jsonify({'error': 'Thiếu URL'}), 400
+    # Crawl nội dung (async)
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        content, crawl_note = loop.run_until_complete(fetch_law_content(url))
+    except Exception as e:
+        return jsonify({'error': f'Lỗi khi crawl: {str(e)}'}), 500
+    if not content:
+        return jsonify({'error': crawl_note or 'Không lấy được nội dung từ trang web'}), 400
+    # Lưu document
+    doc_title = title or url
+    document = LegalDocument(
+        title=doc_title,
+        content=content,
+        document_type='law',
+        uploaded_by='crawler'
+    )
+    db.session.add(document)
+    db.session.flush()  # Lấy document.id
+    # Liên kết với topic nếu có
+    if topic_id:
+        topic = LegalTopic.query.get(topic_id)
+        if topic:
+            topic_doc = TopicDocument(
+                topic_id=int(topic_id),
+                document_id=document.id,
+                relevance_score=1.0
+            )
+            db.session.add(topic_doc)
+    db.session.commit()
+    return jsonify({
+        'message': 'Đã crawl và lưu tài liệu thành công',
+        'document_id': document.id,
+        'title': document.title,
+        'note': crawl_note
+    })
+
+async def fetch_law_content(url):
+    """Hàm chính để crawl 1 URL, trả về (content, error)"""
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+    async with aiohttp.ClientSession() as session:
+        content, error = await fetch_and_parse(session, url, semaphore)
+        return content, error
+    
 
 @app.route('/api/documents', methods=['GET'])
 def get_documents():

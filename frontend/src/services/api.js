@@ -1,4 +1,6 @@
+
 import axios from 'axios';
+
 
 const API_BASE_URL = 'http://localhost:5000/api';
 
@@ -9,8 +11,11 @@ const api = axios.create({
   },
 });
 
+
 export const apiService = {
   // Health check
+    // Crawl law document
+  crawlLawDocument: (data) => api.post('/crawl-law-document', data),
   healthCheck: () => api.get('/health'),
 
   // Topics

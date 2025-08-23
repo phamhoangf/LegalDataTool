@@ -568,6 +568,64 @@ const TopicManagement = () => {
               </Form>
             </div>
           </TabPane>
+          <TabPane tab="🌐 Crawl từ Web" key="crawl">
+            <div style={{ padding: 16 }}>
+              <Form
+                layout="vertical"
+                onFinish={async (values) => {
+                  if (!selectedTopic) {
+                    message.error('Vui lòng chọn chủ đề!');
+                    return;
+                  }
+                  try {
+                    setLoading(true);
+                    const res = await apiService.crawlLawDocument({
+                      url: values.crawl_url,
+                      topic_id: selectedTopic.id,
+                      title: values.title || values.crawl_url
+                    });
+                    if (res.data && (res.data.document_id || res.data.message)) {
+                      message.success('Crawl và lưu tài liệu thành công!');
+                      setUploadModalVisible(false);
+                      // Luôn refresh lại topics/documents để đồng bộ UI
+                      await loadTopics();
+                      await loadDocuments();
+                    } else {
+                      message.error(res.data?.error || 'Crawl thất bại!');
+                    }
+                  } catch (err) {
+                    message.error(err?.response?.data?.error || 'Crawl thất bại!');
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+              >
+                <Form.Item
+                  name="crawl_url"
+                  label="Nhập URL trang web cần crawl"
+                  rules={[{ required: true, message: 'Vui lòng nhập URL!' }]}
+                >
+                  <Input placeholder="https://example.com/van-ban-phap-luat" />
+                </Form.Item>
+                <Form.Item name="title" label="Tiêu đề tài liệu (tùy chọn)">
+                  <Input placeholder="Tiêu đề tài liệu (nếu có)" />
+                </Form.Item>
+                <Form.Item>
+                  <Space>
+                    <Button type="primary" htmlType="submit" loading={loading}>
+                      Crawl & Thêm Tài Liệu
+                    </Button>
+                    <Button onClick={() => setUploadModalVisible(false)}>
+                      Hủy
+                    </Button>
+                  </Space>
+                </Form.Item>
+                <div style={{ color: '#888', fontSize: 13, marginTop: 8 }}>
+                  Tính năng này cho phép lấy nội dung văn bản pháp luật từ một trang web và tự động thêm vào chủ đề.
+                </div>
+              </Form>
+            </div>
+          </TabPane>
         </Tabs>
       </Modal>
     </div>
