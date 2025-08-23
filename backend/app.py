@@ -254,44 +254,38 @@ def upload_document_file():
     """Upload file tài liệu mà không cần liên kết với chủ đề"""
     if 'file' not in request.files:
         return jsonify({'error': 'Không có file được tải lên'}), 400
-    
+
     file = request.files['file']
     if file.filename == '':
         return jsonify({'error': 'Tên file không hợp lệ'}), 400
-    
+
     title = request.form.get('title', file.filename)
     document_type = request.form.get('document_type', 'law')
-    
-    # Đọc nội dung file
+
+    # Xử lý file đa định dạng
     file_content = file.read()
-    
-    # Kiểm tra kích thước file
-    is_valid_size, size_error = validate_file_size(file_content, max_size_mb=50)
-    if not is_valid_size:
-        return jsonify({'error': size_error}), 400
-    
-    # Xử lý file bằng file handler
-    processing_result = process_file(file_content, file.filename)
-    
-    if not processing_result['success']:
-        return jsonify({'error': processing_result['error']}), 400
-    
-    content = processing_result['content']
-    
+    result = process_file(file_content, file.filename)
+    if not result.get('success'):
+        return jsonify({'error': result.get('error', 'Không thể xử lý file')}), 400
+
+    content = result.get('content', '')
+
     # Tạo document
     document = LegalDocument(
         title=title,
         content=content,
         document_type=document_type
     )
-    
+
     db.session.add(document)
     db.session.commit()
-    
+
     return jsonify({
         'id': document.id,
         'title': document.title,
-        'message': 'Tài liệu đã được tải lên thành công'
+        'message': 'Tài liệu đã được tải lên thành công',
+        'file_type': result.get('file_type'),
+        'metadata': result.get('metadata', {})
     }), 201
 
 @app.route('/api/upload', methods=['POST'])
@@ -299,31 +293,23 @@ def upload_legal_document():
     """Tải lên văn bản luật và liên kết với chủ đề"""
     if 'file' not in request.files:
         return jsonify({'error': 'Không có file được tải lên'}), 400
-    
+
     file = request.files['file']
     topic_id = request.form.get('topic_id')
     document_title = request.form.get('title', file.filename)
     document_type = request.form.get('document_type', 'law')
-    
+
     if file.filename == '':
         return jsonify({'error': 'Không có file được chọn'}), 400
-    
-    # Đọc nội dung file
+
+    # Xử lý file đa định dạng
     file_content = file.read()
-    
-    # Kiểm tra kích thước file
-    is_valid_size, size_error = validate_file_size(file_content, max_size_mb=50)
-    if not is_valid_size:
-        return jsonify({'error': size_error}), 400
-    
-    # Xử lý file bằng file handler
-    processing_result = process_file(file_content, file.filename)
-    
-    if not processing_result['success']:
-        return jsonify({'error': processing_result['error']}), 400
-    
-    content = processing_result['content']
-    
+    result = process_file(file_content, file.filename)
+    if not result.get('success'):
+        return jsonify({'error': result.get('error', 'Không thể xử lý file')}), 400
+
+    content = result.get('content', '')
+
     # Tạo document mới
     document = LegalDocument(
         title=document_title,
@@ -331,10 +317,10 @@ def upload_legal_document():
         document_type=document_type,
         uploaded_by='user'
     )
-    
+
     db.session.add(document)
     db.session.flush()  # Để có ID
-    
+
     # Liên kết với topic nếu có
     if topic_id:
         topic = LegalTopic.query.get(topic_id)
@@ -345,13 +331,14 @@ def upload_legal_document():
                 relevance_score=1.0
             )
             db.session.add(topic_doc)
-    
+
     db.session.commit()
-    
+
     return jsonify({
         'message': 'File đã được tải lên và liên kết thành công',
         'document_id': document.id,
-        'content_length': len(content)
+        'file_type': result.get('file_type'),
+        'metadata': result.get('metadata', {})
     })
 
 @app.route('/api/generate', methods=['POST'])
