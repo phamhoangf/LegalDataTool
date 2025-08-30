@@ -385,116 +385,121 @@ class DataGenerator:
     def create_word_matching_prompt(self, content, topic, starter, focus, difficulty):
         """Prompt cho loại Word Matching - tìm từ khóa, thuật ngữ cụ thể trong văn bản"""
         return f"""
-Dưới đây là các điều luật về chủ đề "{topic}":
+    Dưới đây là các điều luật về chủ đề "{topic}":
 
-{content}
+    {content}
 
-Hãy tạo 1 câu hỏi loại WORD MATCHING (độ khó {difficulty}) tập trung vào {focus}.
+    Hãy tạo 1 câu hỏi loại WORD MATCHING (độ khó {difficulty}) tập trung vào {focus}.
 
-ĐẶC ĐIỂM CÂU HỎI WORD MATCHING:
-- Yêu cầu tìm từ khóa, thuật ngữ cụ thể trong văn bản
-- Hỏi về định nghĩa chính xác của các khái niệm pháp lý
-- Câu trả lời là từ/cụm từ xuất hiện trực tiếp trong văn bản
-- Tập trung vào thuật ngữ chuyên môn, số liệu cụ thể
+    ĐẶC ĐIỂM CÂU HỎI WORD MATCHING:
+    - Yêu cầu tìm từ khóa, thuật ngữ cụ thể 
+    - Hỏi về định nghĩa chính xác của các khái niệm pháp lý
+    - Câu trả lời là thông tin cụ thể, rõ ràng
+    - Tập trung vào thuật ngữ chuyên môn, số liệu cụ thể
 
-YÊU CẦU QUAN TRỌNG:
-1. Hạn chế dùng "Theo Điều X của Luật..."
-2. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..." hoặc cấu trúc tương tự
-3. Câu hỏi phải độc lập, không nhắc đến tên điều luật cụ thể
-4. Đáp án phải DIỄN GIẢI ĐẦY ĐỦ nội dung trả lời cho câu hỏi, không chỉ nêu con số hoặc từ, cụm từ ngắn gọn
-5. Tránh đáp án cụt lủn như: "11%", "Thống đốc Ngân hàng Nhà nước"
+    YÊU CẦU QUAN TRỌNG:
+    1. Câu hỏi và đáp án phải HOÀN TOÀN ĐỘC LẬP - có thể hiểu được mà không cần context bên ngoài
+    2. TUYỆT ĐỐI KHÔNG dùng "dựa trên điều luật trên", "theo quy định trên", "căn cứ vào điều trên"
+    3. Không cần thiết phải trích dẫn, NẾU cần trích dẫn: phải ghi ĐẦY ĐỦ tên văn bản (ví dụ: "Theo Luật Giao thông đường bộ 2008, Điều 25") hoặc nội dung phần văn bản cần trích dẫn
+    4. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..." 
+    5. Đáp án phải DIỄN GIẢI ĐẦY ĐỦ, không cụt lủn như "11%" hay "Thống đốc"
 
-VÍ DỤ CÂU HỎI WORD MATCHING:
-- "Độ tuổi tối thiểu để được cấp bằng lái xe ô tô là?"
-- "Thuật ngữ nào được dùng để chỉ phương tiện không có động cơ?"
-- "Mức phạt tối đa cho vi phạm tốc độ là bao nhiêu?"
+    VÍ DỤ TỐT:
+    Question: "Độ tuổi tối thiểu để được cấp bằng lái xe ô tô là bao nhiêu?"
+    Answer: "Độ tuổi tối thiểu để được cấp bằng lái xe ô tô là 18 tuổi đối với xe ô tô con và 21 tuổi đối với xe tải, xe khách theo quy định của Luật Giao thông đường bộ."
 
-Trả về output dưới dạng JSON với qa_pairs.
+    VÍ DỤ XẤU (TRÁNH):
+    Answer: "Dựa trên điều luật trên, độ tuổi là 18 tuổi."
+
+    Trả về output dưới dạng JSON với qa_pairs.
         """
 
     def create_concept_understanding_prompt(self, content, topic, starter, focus, difficulty):
         """Prompt cho loại Concept Understanding - hiểu khái niệm, nguyên tắc"""
         return f"""
-Dưới đây là các điều luật về chủ đề "{topic}":
+    Dưới đây là các điều luật về chủ đề "{topic}":
 
-{content}
+    {content}
 
-Hãy tạo 1 câu hỏi loại CONCEPT UNDERSTANDING (độ khó {difficulty}) tập trung vào {focus}.
+    Hãy tạo 1 câu hỏi loại CONCEPT UNDERSTANDING (độ khó {difficulty}) tập trung vào {focus}.
 
-ĐẶC ĐIỂM CÂU HỎI CONCEPT UNDERSTANDING:
-- Kiểm tra hiểu biết về khái niệm, nguyên tắc pháp lý
-- Yêu cầu giải thích ý nghĩa, mục đích của quy định
-- Câu trả lời cần diễn giải, không chỉ trích dẫn nguyên văn
-- Tập trung vào việc hiểu "tại sao" và "như thế nào"
+    ĐẶC ĐIỂM CÂU HỎI CONCEPT UNDERSTANDING:
+    - Kiểm tra hiểu biết về khái niệm, nguyên tắc pháp lý
+    - Yêu cầu giải thích ý nghĩa, mục đích của quy định
+    - Câu trả lời cần diễn giải, giải thích rõ ràng
+    - Tập trung vào việc hiểu "tại sao" và "như thế nào"
 
-YÊU CẦU QUAN TRỌNG:
-1. Hạn chế dùng "Theo Điều X của Luật..."
-2. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..." hoặc cấu trúc tương tự
-3. Câu hỏi phải độc lập, không nhắc đến tên điều luật cụ thể
-4. Đáp án cần giải thích khái niệm, không chỉ liệt kê
+    YÊU CẦU QUAN TRỌNG:
+    1. Câu hỏi và đáp án phải HOÀN TOÀN ĐỘC LẬP - có thể hiểu được mà không cần context bên ngoài
+    2. TUYỆT ĐỐI KHÔNG dùng "dựa trên điều luật trên", "theo quy định trên", "căn cứ vào điều trên"
+    3. Không cần thiết phải trích dẫn, NẾU cần trích dẫn: phải ghi ĐẦY ĐỦ tên văn bản (ví dụ: "Theo Luật Giao thông đường bộ 2008, Điều 25") hoặc nội dung phần văn bản cần trích dẫn
+    4. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..."
+    5. Đáp án cần giải thích khái niệm đầy đủ, có thể bao gồm ví dụ minh họa
 
-VÍ DỤ CÂU HỎI CONCEPT UNDERSTANDING:
-- "Tại sao việc kiểm định định kỳ phương tiện là bắt buộc?"
-- "Nguyên tắc an toàn giao thông được thể hiện như thế nào?"
-- "Vì sao cần phân loại bằng lái xe theo từng hạng?"
+    VÍ DỤ TỐT:
+    Question: "Tại sao việc kiểm định định kỳ phương tiện giao thông là bắt buộc?"
+    Answer: "Việc kiểm định định kỳ phương tiện giao thông là bắt buộc nhằm đảm bảo an toàn giao thông, kiểm tra tình trạng kỹ thuật của xe, phát hiện sớm các hư hỏng có thể gây tai nạn, đồng thời kiểm soát khí thải bảo vệ môi trường."
 
-Trả về output dưới dạng JSON với qa_pairs.
+    Trả về output dưới dạng JSON với qa_pairs.
         """
 
     def create_multi_paragraph_prompt(self, content, topic, starter, focus, difficulty):
         """Prompt cho loại Multi-paragraph Reading - đọc hiểu nhiều đoạn văn"""
         return f"""
-Dưới đây là các điều luật về chủ đề "{topic}":S
+    Dưới đây là các điều luật về chủ đề "{topic}":
 
-{content}
+    {content}
 
-Hãy tạo 1 câu hỏi loại MULTI-PARAGRAPH READING (độ khó {difficulty}) tập trung vào {focus}.
+    Hãy tạo 1 câu hỏi loại MULTI-PARAGRAPH READING (độ khó {difficulty}) tập trung vào {focus}.
 
-ĐẶC ĐIỂM CÂU HỎI MULTI-PARAGRAPH READING:
-- Yêu cầu đọc và tổng hợp thông tin từ nhiều đoạn văn
-- So sánh, đối chiếu các quy định khác nhau
-- Tìm mối liên hệ giữa các điều khoản
-- Câu trả lời cần kết hợp thông tin từ nhiều nguồn trong văn bản
+    ĐẶC ĐIỂM CÂU HỎI MULTI-PARAGRAPH READING:
+    - Yêu cầu tổng hợp thông tin từ nhiều quy định khác nhau
+    - So sánh, đối chiếu các điều khoản
+    - Tìm mối liên hệ giữa các quy định
+    - Câu trả lời cần kết hợp thông tin từ nhiều nguồn
 
-YÊU CẦU QUAN TRỌNG:
-1. Hạn chế dùng "Theo Điều X của Luật..."
-2. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..." hoặc cấu trúc tương tự
-3. Câu hỏi phải độc lập, không nhắc đến tên điều luật cụ thể
-4. Đáp án phải tổng hợp từ nhiều phần khác nhau của văn bản
+    YÊU CẦU QUAN TRỌNG:
+    1. Câu hỏi và đáp án phải HOÀN TOÀN ĐỘC LẬP - có thể hiểu được mà không cần context bên ngoài
+    2. TUYỆT ĐỐI KHÔNG dùng "dựa trên điều luật trên", "theo các quy định trên", "căn cứ vào điều trên"
+    3. Không cần thiết phải trích dẫn, NẾU cần trích dẫn: phải ghi ĐẦY ĐỦ tên văn bản (ví dụ: "Theo Luật Giao thông đường bộ 2008, Điều 25") hoặc nội dung phần văn bản cần trích dẫn
+    4. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..."
+    5. Đáp án phải tổng hợp, so sánh rõ ràng các quy định khác nhau
 
-VÍ DỤ CÂU HỎI MULTI-PARAGRAPH READING:
-- "So sánh quy định về bằng lái xe cho người dân thường và lực lượng vũ trang?"
-- "Các trường hợp được miễn phí đăng ký xe bao gồm những gì?"
-- "Quy trình xử phạt vi phạm giao thông khác nhau thế nào giữa các mức độ?"
+    VÍ DỤ TỐT:
+    Question: "Có những hình thức xử phạt nào đối với vi phạm giao thông?"
+    Answer: "Có 4 hình thức xử phạt chính: phạt cảnh cáo đối với vi phạm nhẹ lần đầu, phạt tiền từ 100.000 đến 40 triệu đồng tùy mức độ vi phạm, tước quyền sử dụng bằng lái xe từ 1-24 tháng đối với vi phạm nghiêm trọng, và tịch thu phương tiện đối với các trường hợp vi phạm đặc biệt nghiêm trọng."
 
-Trả về output dưới dạng JSON với qa_pairs.
+    Trả về output dưới dạng JSON với qa_pairs.
         """
 
     def create_multihop_prompt(self, content, topic, starter, focus, difficulty):
         """Prompt cho loại Multihop - suy luận qua nhiều bước"""
         return f"""
-Dưới đây là các điều luật về chủ đề "{topic}":
+    Dưới đây là các điều luật về chủ đề "{topic}":
 
-{content}
+    {content}
 
-Hãy tạo 1 câu hỏi loại MULTIHOP (độ khó {difficulty}) tập trung vào {focus}.
+    Hãy tạo 1 câu hỏi loại MULTIHOP (độ khó {difficulty}) tập trung vào {focus}.
 
-ĐẶC ĐIỂM CÂU HỎI MULTIHOP:
-- Yêu cầu suy luận logic qua nhiều bước
-- Kết hợp nhiều quy định để đưa ra kết luận
-- Áp dụng quy tắc vào tình huống phức tạp, thực tế
-- Câu trả lời cần trải qua chuỗi suy luận có logic
+    ĐẶC ĐIỂM CÂU HỎI MULTIHOP:
+    - Yêu cầu suy luận logic qua nhiều bước
+    - Kết hợp thông tin từ nhiều quy định để đưa ra kết luận
+    - Áp dụng quy tắc vào tình huống phức tạp, thực tế
+    - Câu trả lời cần chuỗi suy luận có logic rõ ràng
 
-YÊU CẦU QUAN TRỌNG:
-1. Hạn chế dùng "Theo Điều X của Luật..."
-2. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..." hoặc cấu trúc tương tự
-3. Câu hỏi phải độc lập, không nhắc đến tên điều luật cụ thể
-4. Đáp án cần có chuỗi suy luận rõ ràng, không chỉ kết luận
+    YÊU CẦU QUAN TRỌNG:
+    1. Câu hỏi và đáp án phải HOÀN TOÀN ĐỘC LẬP - có thể hiểu được mà không cần context bên ngoài
+    2. TUYỆT ĐỐI KHÔNG dùng "dựa trên điều luật trên", "theo các quy định trên", "căn cứ vào điều trên"
+    3. Không cần thiết phải trích dẫn, NẾU cần trích dẫn: phải ghi ĐẦY ĐỦ tên văn bản (ví dụ: "Theo Luật Giao thông đường bộ 2008, Điều 25") hoặc nội dung phần văn bản cần trích dẫn
+    4. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..."
+    5. Đáp án cần có chuỗi suy luận từng bước: tình huống → quy định áp dụng → kết luận
 
-VÍ DỤ CÂU HỎI MULTIHOP:
-- "Trong trường hợp nào một doanh nghiệp vận tải có thể bị thu hồi giấy phép và phải làm gì để được cấp lại?"
-- "Làm cách nào để xác định mức phạt cụ thể cho một vi phạm giao thông có nhiều tình tiết tăng nặng?"
-- "Vì sao việc vận chuyển hàng nguy hiểm cần tuân thủ đồng thời nhiều quy định khác nhau?"
+    VÍ DỤ TỐT:
+    Question: "Một tài xế lái xe tải chở hàng quá tải 50% và không có bằng lái phù hợp sẽ bị xử lý như thế nào?"
+    Answer: "Tài xế này sẽ bị xử phạt kép: đầu tiên bị phạt tiền 12-15 triệu đồng và tước bằng lái 2-4 tháng do chở quá tải theo Nghị định 100/2019, đồng thời bị phạt 16-18 triệu và tước bằng lái 10-12 tháng do không có bằng lái phù hợp. Tổng cộng có thể bị phạt đến 33 triệu đồng và tước bằng lái tối đa 16 tháng."
 
-Trả về output dưới dạng JSON với qa_pairs.
+    VÍ DỤ XẤU (TRÁNH):
+    Answer: "Căn cứ vào các điều luật trên, tài xế sẽ bị xử phạt..."
+
+    Trả về output dưới dạng JSON với qa_pairs.
         """

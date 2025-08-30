@@ -341,23 +341,3 @@ class LegalDocumentParser:
             })
         
         return articles
-
-    def monte_carlo_sample_articles(self, articles: List[Dict[str, Any]], sample_size: int) -> List[Dict[str, Any]]:
-        """
-        Monte Carlo sampling cho articles
-        
-        Args:
-            articles: List of articles to sample from
-            sample_size: Number of articles to select
-            
-        Returns:
-            List of randomly selected articles
-        """
-        if not articles or sample_size <= 0:
-            return []
-            
-        if sample_size >= len(articles):
-            return articles.copy()
-        
-        # Pure random sampling without replacement
-        return random.sample(articles, sample_size)
