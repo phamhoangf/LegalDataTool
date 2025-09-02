@@ -341,7 +341,7 @@ const DataGeneration = () => {
                     Model được fine-tune cho dữ liệu pháp luật Việt Nam
                   </div>
                   <div style={{ fontSize: '11px', color: '#ff6b6b', marginLeft: 20 }}>
-                    ⚠️ Cần GPU mạnh, lần đầu sử dụng có thể chậm do download model
+                    ⚠️ Cần GPU mạnh, lần đầu sử dụng có thể chậm
                   </div>
                 </Radio>
               </Space>

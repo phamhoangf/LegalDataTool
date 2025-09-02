@@ -15,7 +15,8 @@ import {
   Tooltip,
   Select,
   Typography,
-  Tabs
+  Tabs,
+  Spin
 } from 'antd';
 import {
   PlusOutlined,
@@ -38,7 +39,11 @@ const TopicManagement = () => {
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [uploadModalVisible, setUploadModalVisible] = useState(false);
+  const [previewModalVisible, setPreviewModalVisible] = useState(false);
   const [selectedTopic, setSelectedTopic] = useState(null);
+  const [selectedDocument, setSelectedDocument] = useState(null);
+  const [documentContent, setDocumentContent] = useState('');
+  const [loadingDocument, setLoadingDocument] = useState(false);
   const [form] = Form.useForm();
 
   useEffect(() => {
@@ -86,6 +91,24 @@ const TopicManagement = () => {
       loadTopics();
     } catch (error) {
       message.error('Không thể xóa chủ đề');
+    }
+  };
+
+  const handlePreviewDocument = async (document) => {
+    try {
+      setLoadingDocument(true);
+      setSelectedDocument(document);
+      setPreviewModalVisible(true);
+      
+      // Load document content từ API
+      const response = await apiService.getDocuments();
+      const fullDoc = response.data.find(d => d.id === document.id);
+      setDocumentContent(fullDoc?.content || 'Không có nội dung');
+    } catch (error) {
+      message.error('Không thể tải nội dung tài liệu');
+      setDocumentContent('Lỗi khi tải nội dung');
+    } finally {
+      setLoadingDocument(false);
     }
   };
 
@@ -198,9 +221,20 @@ const TopicManagement = () => {
                         <p>Chủ đề này có {docCount} tài liệu liên kết:</p>
                         <div style={{ marginTop: 16 }}>
                           {record.documents && record.documents.map(doc => (
-                            <Tag key={doc.id} color="blue" style={{ marginBottom: 8, marginRight: 8, display: 'block', width: 'fit-content' }}>
-                              <FileTextOutlined /> {doc.title}
-                            </Tag>
+                            <div key={doc.id} style={{ marginBottom: 8 }}>
+                              <Tag 
+                                color="blue" 
+                                style={{ 
+                                  marginRight: 8,
+                                  cursor: 'pointer',
+                                  display: 'block',
+                                  width: 'fit-content'
+                                }}
+                                onClick={() => handlePreviewDocument(doc)}
+                              >
+                                <FileTextOutlined /> {doc.title}
+                              </Tag>
+                            </div>
                           ))}
                         </div>
                       </div>
@@ -565,6 +599,49 @@ const TopicManagement = () => {
             </div>
           </TabPane>
         </Tabs>
+      </Modal>
+      
+      {/* Modal Preview Document */}
+      <Modal
+        title={`Xem trước tài liệu: ${selectedDocument?.title || ''}`}
+        open={previewModalVisible}
+        onCancel={() => {
+          setPreviewModalVisible(false);
+          setSelectedDocument(null);
+          setDocumentContent('');
+        }}
+        footer={[
+          <Button key="close" onClick={() => {
+            setPreviewModalVisible(false);
+            setSelectedDocument(null);
+            setDocumentContent('');
+          }}>
+            Đóng
+          </Button>
+        ]}
+        width={800}
+        zIndex={2000}
+      >
+        <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+          {loadingDocument ? (
+            <div style={{ textAlign: 'center', padding: '20px' }}>
+              <Spin />
+              <p style={{ marginTop: 8 }}>Đang tải nội dung...</p>
+            </div>
+          ) : (
+            <div style={{ 
+              whiteSpace: 'pre-wrap', 
+              wordBreak: 'break-word',
+              lineHeight: '1.6',
+              padding: '16px',
+              background: '#f5f5f5',
+              borderRadius: '6px',
+              fontSize: '14px'
+            }}>
+              {documentContent || 'Không có nội dung'}
+            </div>
+          )}
+        </div>
       </Modal>
     </div>
   );
