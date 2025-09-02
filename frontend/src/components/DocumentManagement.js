@@ -14,7 +14,8 @@ import {
   Popconfirm,
   Tooltip,
   Select,
-  Typography
+  Typography,
+  Tabs
 } from 'antd';
 import {
   PlusOutlined,
@@ -26,6 +27,7 @@ import {
   LinkOutlined
 } from '@ant-design/icons';
 import apiService from '../services/api';
+import VanBanDropdown from './VanBanDropdown';
 
 const { TextArea } = Input;
 const { Dragger } = Upload;
@@ -52,7 +54,6 @@ const DocumentManagement = () => {
     try {
       setLoading(true);
       const response = await apiService.getDocuments();
-      console.log('Documents loaded:', response.data);
       setDocuments(response.data);
     } catch (error) {
       message.error('Không thể tải danh sách tài liệu');
@@ -147,7 +148,7 @@ const DocumentManagement = () => {
       return false; // Prevent default upload
     },
     onDrop(e) {
-      console.log('Dropped files', e.dataTransfer.files);
+      // Handle file drop for upload
     },
   };
 
@@ -156,17 +157,28 @@ const DocumentManagement = () => {
       title: 'Tiêu Đề',
       dataIndex: 'title',
       key: 'title',
-      render: (text) => <strong>{text}</strong>,
+      render: (text, record) => (
+        <div>
+          <strong style={{ display: 'block', marginBottom: 4 }}>{text}</strong>
+          {(record.articles_count || 0) > 0 && (
+            <Tag size="small" color="blue">{record.articles_count} điều</Tag>
+          )}
+        </div>
+      ),
     },
     {
       title: 'Loại Tài Liệu',
       dataIndex: 'document_type',
       key: 'document_type',
-      render: (type) => (
-        <Tag color={type === 'law' ? 'blue' : 'green'}>
-          {type === 'law' ? 'Văn bản pháp luật' : 'Tài liệu khác'}
-        </Tag>
-      ),
+      render: (type, record) => {
+        // Tất cả document từ CSV đều là văn bản pháp luật
+        const isLaw = type === 'law' || type === 'legal_document' || record.uploaded_by === 'csv_import';
+        return (
+          <Tag color={isLaw ? 'blue' : 'green'}>
+            {isLaw ? 'Văn bản pháp luật' : 'Tài liệu khác'}
+          </Tag>
+        );
+      },
     },
     {
       title: 'Độ Dài',
@@ -174,20 +186,6 @@ const DocumentManagement = () => {
       render: (_, record) => {
         const length = record.content ? record.content.length : 0;
         return <Text type="secondary">{length.toLocaleString()} ký tự</Text>;
-      },
-    },
-    {
-      title: 'Articles',
-      key: 'articles_count',
-      width: 100,
-      align: 'center',
-      render: (_, record) => {
-        const count = record.articles_count || 0;
-        return (
-          <Tag color={count > 0 ? 'green' : 'default'}>
-            {count} điều
-          </Tag>
-        );
       },
     },
     {
@@ -248,7 +246,7 @@ const DocumentManagement = () => {
                   width: 800,
                   content: (
                     <div>
-                      <p><strong>Loại:</strong> {record.document_type === 'law' ? 'Văn bản pháp luật' : 'Tài liệu khác'}</p>
+                      <p><strong>Loại:</strong> {record.document_type === 'law' || record.document_type === 'legal_document' || record.uploaded_by === 'csv_import' ? 'Văn bản pháp luật' : 'Tài liệu khác'}</p>
                       <p><strong>Độ dài:</strong> {record.content ? record.content.length.toLocaleString() : 0} ký tự</p>
                       <p><strong>Số lượng điều:</strong> <Tag color={record.articles_count > 0 ? 'green' : 'default'}>{record.articles_count || 0} điều</Tag></p>
                       
@@ -275,7 +273,8 @@ const DocumentManagement = () => {
                             padding: 12,
                             borderRadius: 4,
                             fontSize: '13px',
-                            lineHeight: '1.6'
+                            lineHeight: '1.4',
+                            whiteSpace: 'pre-wrap'
                           }}>
                             {record.content.substring(0, 3000)}
                             {record.content.length > 3000 && '...'}
@@ -353,7 +352,7 @@ const DocumentManagement = () => {
               icon={<PlusOutlined />}
               onClick={() => setModalVisible(true)}
             >
-              Tạo Tài Liệu Mới
+              Thêm Tài Liệu
             </Button>
           </Space>
         }
@@ -384,65 +383,89 @@ const DocumentManagement = () => {
 
       {/* Modal tạo tài liệu mới */}
       <Modal
-        title="Tạo Tài Liệu Mới"
+        title="Thêm Tài Liệu"
         open={modalVisible}
         onCancel={() => {
           setModalVisible(false);
           form.resetFields();
         }}
         footer={null}
-        width={700}
+        width={800}
       >
-        <Form
-          form={form}
-          layout="vertical"
-          onFinish={handleCreateDocument}
-        >
-          <Form.Item
-            name="title"
-            label="Tiêu Đề Tài Liệu"
-            rules={[{ required: true, message: 'Vui lòng nhập tiêu đề!' }]}
-          >
-            <Input placeholder="VD: Luật Giao thông đường bộ 2008 - Điều 60" />
-          </Form.Item>
+        <Tabs
+          defaultActiveKey="csv"
+          items={[
+            {
+              key: 'csv',
+              label: 'Chọn từ danh sách có sẵn',
+              children: (
+                <VanBanDropdown 
+                  onDocumentImported={(newDoc) => {
+                    loadDocuments(); // Reload để lấy dữ liệu mới nhất
+                    setModalVisible(false);
+                    message.success('Tài liệu đã được thêm thành công!');
+                  }}
+                />
+              )
+            },
+            {
+              key: 'manual',
+              label: 'Tạo thủ công',
+              children: (
+                <Form
+                  form={form}
+                  layout="vertical"
+                  onFinish={handleCreateDocument}
+                >
+                  <Form.Item
+                    name="title"
+                    label="Tiêu Đề Tài Liệu"
+                    rules={[{ required: true, message: 'Vui lòng nhập tiêu đề!' }]}
+                  >
+                    <Input placeholder="VD: Luật Giao thông đường bộ 2008 - Điều 60" />
+                  </Form.Item>
 
-          <Form.Item
-            name="document_type"
-            label="Loại Tài Liệu"
-            rules={[{ required: true, message: 'Vui lòng chọn loại tài liệu!' }]}
-            initialValue="law"
-          >
-            <Select>
-              <Select.Option value="law">Văn bản pháp luật</Select.Option>
-              <Select.Option value="other">Tài liệu khác</Select.Option>
-            </Select>
-          </Form.Item>
+                  <Form.Item
+                    name="document_type"
+                    label="Loại Tài Liệu"
+                    rules={[{ required: true, message: 'Vui lòng chọn loại tài liệu!' }]}
+                    initialValue="law"
+                  >
+                    <Select>
+                      <Select.Option value="law">Văn bản pháp luật</Select.Option>
+                      <Select.Option value="other">Tài liệu khác</Select.Option>
+                    </Select>
+                  </Form.Item>
 
-          <Form.Item
-            name="content"
-            label="Nội Dung Tài Liệu"
-            rules={[{ required: true, message: 'Vui lòng nhập nội dung!' }]}
-          >
-            <TextArea
-              rows={10}
-              placeholder="Paste nội dung tài liệu vào đây..."
-            />
-          </Form.Item>
+                  <Form.Item
+                    name="content"
+                    label="Nội Dung Tài Liệu"
+                    rules={[{ required: true, message: 'Vui lòng nhập nội dung!' }]}
+                  >
+                    <TextArea
+                      rows={10}
+                      placeholder="Paste nội dung tài liệu vào đây..."
+                    />
+                  </Form.Item>
 
-          <Form.Item>
-            <Space>
-              <Button type="primary" htmlType="submit">
-                Tạo Tài Liệu
-              </Button>
-              <Button onClick={() => {
-                setModalVisible(false);
-                form.resetFields();
-              }}>
-                Hủy
-              </Button>
-            </Space>
-          </Form.Item>
-        </Form>
+                  <Form.Item>
+                    <Space>
+                      <Button type="primary" htmlType="submit">
+                        Tạo Tài Liệu
+                      </Button>
+                      <Button onClick={() => {
+                        setModalVisible(false);
+                        form.resetFields();
+                      }}>
+                        Hủy
+                      </Button>
+                    </Space>
+                  </Form.Item>
+                </Form>
+              )
+            }
+          ]}
+        />
       </Modal>
 
       {/* Modal chỉnh sửa tài liệu */}

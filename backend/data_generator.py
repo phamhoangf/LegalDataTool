@@ -4,10 +4,20 @@ import json
 import random
 import os
 import re
+import time  # Add time import for rate limiting
 from typing import List, Dict, Any
 from pydantic import BaseModel
 from similarity_checker import QuestionSimilarityChecker
 from document_parsers import LegalDocumentParser
+
+# HuggingFace imports
+try:
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    import torch
+    HF_AVAILABLE = True
+except ImportError:
+    HF_AVAILABLE = False
+    print("⚠️ HuggingFace transformers not available. Install with: pip install transformers torch")
 
 class SourceReference(BaseModel):
     """Tham chiếu đến nguồn của thông tin"""
@@ -42,6 +52,104 @@ class DataGenerator:
         # Khởi tạo similarity checker
         self.similarity_checker = QuestionSimilarityChecker(similarity_threshold=similarity_threshold)
         print(f"🔍 Initialized similarity checker with threshold {similarity_threshold}")
+        
+        # HuggingFace model setup
+        self.hf_model = None
+        self.hf_tokenizer = None
+        
+        # Rate limiting for Gemini API (15 req/min = 4 seconds per request)
+        self.last_api_call = 0
+        self.min_interval = 4.0  # seconds between API calls
+    
+    def init_huggingface_model(self, model_name: str = "phamhoangf/qwen3-4b-generate-data"):
+        """Initialize HuggingFace model"""
+        if not HF_AVAILABLE:
+            raise ImportError("HuggingFace transformers not available")
+        
+        try:
+            print(f"🤖 Loading HuggingFace model: {model_name}")
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            
+            self.hf_tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.hf_model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                device_map="auto" if device == "cuda" else None
+            )
+            print(f"✅ HuggingFace model loaded on {device}")
+            
+        except Exception as e:
+            print(f"❌ Failed to load HuggingFace model: {str(e)}")
+            raise
+    
+    def generate_qa_with_gemini(self, prompt: str, temperature: float = 0.7) -> LegalQAList:
+        """Sinh QA bằng Gemini API với rate limiting"""
+        # Rate limiting: đảm bảo 15 req/min (4 giây/request)
+        current_time = time.time()
+        elapsed = current_time - self.last_api_call
+        
+        if elapsed < self.min_interval:
+            sleep_time = self.min_interval - elapsed
+            print(f"⏳ Rate limiting: sleeping {sleep_time:.1f}s...")
+            time.sleep(sleep_time)
+        
+        self.last_api_call = time.time()
+        
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=temperature,
+                top_p=random.uniform(0.85, 0.95),
+                max_output_tokens=3000,
+                response_mime_type="application/json",
+                response_schema=LegalQAList,
+                seed=random.randint(1, 1000000)
+            )
+        )
+        return response.parsed
+    
+    def generate_qa_with_huggingface(self, prompt: str, temperature: float = 0.7) -> LegalQAList:
+        """Sinh QA bằng HuggingFace model"""
+        if not self.hf_model:
+            raise ValueError("HuggingFace model not initialized. Call init_huggingface_model() first")
+        
+        # Format prompt cho model
+        formatted_prompt = f"<|system|>Bạn là trợ lý AI chuyên về pháp luật Việt Nam. Hãy tạo câu hỏi và câu trả lời từ văn bản pháp luật.<|end|>\n<|user|>{prompt}<|end|>\n<|assistant|>"
+        
+        inputs = self.hf_tokenizer.encode(formatted_prompt, return_tensors="pt")
+        if self.hf_model.device.type == "cuda":
+            inputs = inputs.to("cuda")
+        
+        with torch.no_grad():
+            outputs = self.hf_model.generate(
+                inputs,
+                max_new_tokens=2048,
+                temperature=temperature,
+                do_sample=True,
+                top_p=0.9,
+                pad_token_id=self.hf_tokenizer.eos_token_id
+            )
+        
+        response_text = self.hf_tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
+        
+        # Parse JSON response
+        try:
+            response_json = json.loads(response_text)
+            return LegalQAList(**response_json)
+        except json.JSONDecodeError:
+            # Fallback - tạo single QA nếu không parse được
+            return LegalQAList(qa_pairs=[LegalQA(question="Sample question", answer="Sample answer")])
+    
+    def generate_qa(self, prompt: str, llm_type: str = "gemini", temperature: float = 0.7) -> LegalQAList:
+        """Sinh QA với LLM được chọn"""
+        if llm_type == "gemini":
+            return self.generate_qa_with_gemini(prompt, temperature)
+        elif llm_type == "huggingface":
+            return self.generate_qa_with_huggingface(prompt, temperature)
+        else:
+            raise ValueError(f"Unsupported LLM type: {llm_type}")
+    
     
     def get_rule_based_difficulty(self, data_type: str, num_sources: int) -> str:
         """Rule-based difficulty thay vì yêu cầu LLM tạo ra"""
@@ -223,7 +331,7 @@ class DataGenerator:
         print(f"🎲 Monte Carlo sampling: chọn {len(selected)}/{len(all_articles)} articles")
         return selected
 
-    def generate_from_multiple_documents(self, documents, topic_name, data_type, num_samples):
+    def generate_from_multiple_documents(self, documents, topic_name, data_type, num_samples, llm_type="gemini"):
         """Sinh dữ liệu từ nhiều documents - main method"""
         if not documents:
             return []
@@ -245,7 +353,7 @@ class DataGenerator:
         print(f"  🎯 Đã chọn {len(selected_articles)} articles")
 
         # Sinh dữ liệu
-        all_samples = self.generate_samples_from_articles(selected_articles, topic_name, data_type, num_samples)
+        all_samples = self.generate_samples_from_articles(selected_articles, topic_name, data_type, num_samples, llm_type)
 
         # Lọc trùng lặp
         print(f"🔍 Kiểm tra tương đồng cho {len(all_samples)} samples...")
@@ -254,7 +362,7 @@ class DataGenerator:
         print(f"✅ Hoàn thành: {len(filtered_samples)} samples (đã lọc {len(all_samples) - len(filtered_samples)} trùng lặp)")
         return filtered_samples[:num_samples]
 
-    def generate_samples_from_articles(self, articles, topic, data_type, num_samples):
+    def generate_samples_from_articles(self, articles, topic, data_type, num_samples, llm_type="gemini"):
         """Sinh dữ liệu đơn giản với sources chung cho tất cả câu hỏi"""
         if not articles:
             return []
@@ -270,7 +378,15 @@ class DataGenerator:
         
         # Tạo câu hỏi - mỗi iteration tự Monte Carlo chọn articles
         all_samples = []
+        
+        # Rate limiting info
+        if llm_type == "gemini":
+            estimated_time = num_samples * self.min_interval / 60  # minutes
+            print(f"⏳ Estimated time for {num_samples} samples with Gemini: {estimated_time:.1f} minutes")
+        
         for i in range(num_samples):
+            print(f"🔄 Generating sample {i+1}/{num_samples}...")
+            
             # Monte Carlo sampling cho iteration này
             selected_articles = self.monte_carlo_sample_articles(articles, num_sources)
             
@@ -298,20 +414,9 @@ class DataGenerator:
             
             try:
                 temperature = random.uniform(0.6, 0.9)
-                response = self.client.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=temperature,
-                        top_p=random.uniform(0.85, 0.95),
-                        max_output_tokens=3000,
-                        response_mime_type="application/json",
-                        response_schema=LegalQAList,
-                        seed=random.randint(1, 1000000)
-                    )
-                )
                 
-                structured_data: LegalQAList = response.parsed
+                # Sử dụng LLM được chọn
+                structured_data = self.generate_qa(prompt, llm_type, temperature)
                 
                 # Convert với sources chung và rule-based difficulty
                 for qa_pair in structured_data.qa_pairs:
@@ -329,13 +434,16 @@ class DataGenerator:
                         'metadata': {
                             'generation_method': 'per_iteration_monte_carlo',
                             'num_sources': len(selected_articles),
-                            'temperature': temperature
+                            'temperature': temperature,
+                            'llm_type': llm_type
                         }
                     }
                     all_samples.append(sample)
                     
+                print(f"✅ Sample {i+1}/{num_samples} completed")
+                    
             except Exception as e:
-                print(f"❌ Generation failed for sample {i+1}: {e}")
+                print(f"❌ Generation failed for sample {i+1}/{num_samples}: {e}")
                 continue
         
         return all_samples

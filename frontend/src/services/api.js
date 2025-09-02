@@ -63,6 +63,13 @@ export const apiService = {
   analyzeCoverage: (topicId, settings) => api.post(`/topics/${topicId}/coverage`, settings),
   stopCoverageAnalysis: (topicId) => api.post(`/topics/${topicId}/coverage/stop`),
   analyzeBatchCoverage: (settings) => api.post('/coverage/batch', settings),
+
+  // VanBan CSV Integration
+  searchVanBanDocuments: (query = '', page = 1, limit = 50) => 
+    api.get('/csv/search', { params: { q: query, limit, offset: (page - 1) * limit } }),
+  previewVanBanDocument: (docId, full = false) => 
+    api.get(`/csv/document/${docId}`, { params: { full: full ? 'true' : 'false' } }),
+  importVanBanDocument: (docId) => api.post(`/csv/import/${docId}`, {}),
 };
 
 export default apiService;

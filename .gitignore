@@ -116,3 +116,14 @@ MANIFEST
 
 # Exports
 data/exports/*.jsonl
+
+# Backend test và debug files - không commit
+backend/test_*.py
+backend/debug_*.py
+backend/check_*.py
+backend/quick_test.py
+backend/*_test.py
+backend/*.json
+backend/__pycache__/
+backend/*_SUMMARY.md
+backend/*_COMPLETE.md

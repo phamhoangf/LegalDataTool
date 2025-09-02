@@ -27,6 +27,7 @@ const DataGeneration = () => {
   const [topics, setTopics] = useState([]);
   const [selectedTopic, setSelectedTopic] = useState(null);
   const [dataType, setDataType] = useState('word_matching');
+  const [llmType, setLlmType] = useState('gemini');
   const [numSamples, setNumSamples] = useState(10);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -89,7 +90,8 @@ const DataGeneration = () => {
       const response = await apiService.generateData({
         topic_id: selectedTopic,
         data_type: dataType,
-        num_samples: numSamples
+        num_samples: numSamples,
+        llm_type: llmType
       });
 
       message.success(response.data.message);
@@ -310,6 +312,36 @@ const DataGeneration = () => {
                   <strong>Multi-Hop Reasoning</strong> - Suy luận nhiều bước
                   <div style={{ fontSize: '12px', color: '#666', marginLeft: 20 }}>
                     Phức tạp nhất, cần nhiều bước suy luận logic liên tiếp
+                  </div>
+                </Radio>
+              </Space>
+            </Radio.Group>
+          </div>
+
+          {/* Model LLM */}
+          <div>
+            <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>
+              🤖 Model AI:
+            </label>
+            <Radio.Group
+              value={llmType}
+              onChange={(e) => setLlmType(e.target.value)}
+              style={{ width: '100%' }}
+            >
+              <Space direction="vertical">
+                <Radio value="gemini">
+                  <strong>Gemini 2.5 Flash</strong> - Google AI (Nhanh, ổn định)
+                  <div style={{ fontSize: '12px', color: '#666', marginLeft: 20 }}>
+                    API cloud, phù hợp với việc sinh dữ liệu với chất lượng cao
+                  </div>
+                </Radio>
+                <Radio value="huggingface">
+                  <strong>Qwen3-4B Generate Data</strong> - Model tùy chỉnh (Chuyên biệt)
+                  <div style={{ fontSize: '12px', color: '#666', marginLeft: 20 }}>
+                    Model được fine-tune cho dữ liệu pháp luật Việt Nam
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#ff6b6b', marginLeft: 20 }}>
+                    ⚠️ Cần GPU mạnh, lần đầu sử dụng có thể chậm do download model
                   </div>
                 </Radio>
               </Space>

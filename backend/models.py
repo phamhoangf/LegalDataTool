@@ -19,6 +19,7 @@ class LegalDocument(db.Model):
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     uploaded_by = db.Column(db.String(100))
+    articles_count = db.Column(db.Integer, default=0)  # Pre-calculated articles count for performance
     
     # Relationship
     topic_documents = db.relationship('TopicDocument', backref='document', lazy=True)

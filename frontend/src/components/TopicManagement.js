@@ -50,7 +50,6 @@ const TopicManagement = () => {
     try {
       setLoading(true);
       const response = await apiService.getTopics();
-      console.log('Topics loaded:', response.data);
       setTopics(response.data);
     } catch (error) {
       message.error('Không thể tải danh sách chủ đề');
@@ -161,7 +160,7 @@ const TopicManagement = () => {
       return false; // Prevent default upload
     },
     onDrop(e) {
-      console.log('Dropped files', e.dataTransfer.files);
+            // Handle dropped files for upload
     },
   };
 
@@ -515,12 +514,9 @@ const TopicManagement = () => {
                           value={doc.id}
                           label={doc.title}
                         >
-                          <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <FileTextOutlined />
                             <strong>{doc.title}</strong>
-                            <br />
-                            <Text type="secondary" style={{ fontSize: '12px' }}>
-                              {doc.content ? `${doc.content.length.toLocaleString()} ký tự` : 'Không có nội dung'}
-                            </Text>
                           </div>
                         </Select.Option>
                       ))

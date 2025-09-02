@@ -10,6 +10,7 @@ from data_generator import DataGenerator
 from coverage_analyzer import CoverageAnalyzer
 from document_parsers import LegalDocumentParser
 from models import db, LegalTopic, LegalDocument, TopicDocument, GeneratedData, LabeledData
+from vanban_csv import VanBanCSVReader
 
 # Load .env file từ parent directory
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -28,6 +29,9 @@ data_generator = DataGenerator(api_key=google_api_key, similarity_threshold=0.75
 
 # Initialize legal document parser
 legal_parser = LegalDocumentParser()
+
+# Initialize CSV reader
+vanban_csv = VanBanCSVReader(os.path.join(os.path.dirname(__file__), "..", "data", "van_ban_phap_luat_async.csv"))
 
 # Global variable để lưu coverage analyzer instances  
 coverage_analyzers = {}
@@ -140,14 +144,7 @@ def get_documents():
                 })
         
         # Parse articles count from parsed_structure
-        articles_count = 0
-        if doc.parsed_structure:
-            try:
-                structure = json.loads(doc.parsed_structure)
-                articles = structure.get('articles', [])
-                articles_count = len(articles)
-            except (json.JSONDecodeError, TypeError):
-                articles_count = 0
+        articles_count = doc.articles_count or 0  # Use pre-calculated field
 
         result.append({
             'id': doc.id,
@@ -212,11 +209,14 @@ def create_document():
     
     # Parse document structure ngay khi tạo
     parsed_structure = None
+    articles_count = 0
     try:
         print(f"🔄 Parsing document: {data['title']}")
         structure = legal_parser.parse_document(data['title'], data['content'])
         parsed_structure = json.dumps(structure, ensure_ascii=False)
-        print(f"✅ Document parsed successfully")
+        # Calculate articles count for performance
+        articles_count = len(structure.get('articles', []))
+        print(f"✅ Document parsed successfully - {articles_count} điều")
     except Exception as e:
         print(f"⚠️ Parsing failed: {str(e)}")
     
@@ -226,7 +226,8 @@ def create_document():
         parsed_structure=parsed_structure,
         document_type=data.get('document_type', 'law'),
         document_number=data.get('document_number', ''),
-        uploaded_by=data.get('uploaded_by', 'system')
+        uploaded_by=data.get('uploaded_by', 'system'),
+        articles_count=articles_count
     )
     
     db.session.add(document)
@@ -273,12 +274,27 @@ def update_document(document_id):
     document = LegalDocument.query.get_or_404(document_id)
     data = request.get_json()
     
+    # Check if content is being updated to recalculate articles_count
+    content_updated = False
+    
     if 'title' in data:
         document.title = data['title']
     if 'content' in data:
         document.content = data['content']
+        content_updated = True
     if 'document_type' in data:
         document.document_type = data['document_type']
+    
+    # Recalculate articles_count if content was updated
+    if content_updated:
+        try:
+            structure = legal_parser.parse_document(document.title, document.content)
+            document.parsed_structure = json.dumps(structure, ensure_ascii=False)
+            document.articles_count = len(structure.get('articles', []))
+            print(f"✅ Document updated with {document.articles_count} điều")
+        except Exception as e:
+            print(f"⚠️ Parsing failed during update: {str(e)}")
+            document.articles_count = 0
     
     document.updated_at = datetime.utcnow()
     db.session.commit()
@@ -418,15 +434,23 @@ def generate_training_data():
     topic_id = data.get('topic_id')
     data_type = data.get('data_type')
     num_samples = data.get('num_samples', 10)
+    llm_type = data.get('llm_type', 'gemini')  # Default to gemini
     
     # Validate data_type - chỉ chấp nhận 4 loại mới
     valid_types = ['word_matching', 'concept_understanding', 'multi_paragraph_reading', 'multi_hop_reasoning']
+    valid_llm_types = ['gemini', 'huggingface']
+    
     if not topic_id or not data_type:
         return jsonify({'error': 'Thiếu topic_id hoặc data_type'}), 400
     
     if data_type not in valid_types:
         return jsonify({
             'error': f'data_type không hợp lệ. Chỉ chấp nhận: {", ".join(valid_types)}'
+        }), 400
+    
+    if llm_type not in valid_llm_types:
+        return jsonify({
+            'error': f'llm_type không hợp lệ. Chỉ chấp nhận: {", ".join(valid_llm_types)}'
         }), 400
     
     topic = LegalTopic.query.get(topic_id)
@@ -454,9 +478,18 @@ def generate_training_data():
         
         data_generator.update_similarity_corpus(existing_questions)
         
+        # Initialize HuggingFace model nếu cần
+        if llm_type == 'huggingface':
+            try:
+                if not hasattr(data_generator, 'hf_model') or data_generator.hf_model is None:
+                    print(f"🤖 Initializing HuggingFace model for {llm_type}")
+                    data_generator.init_huggingface_model()
+            except Exception as e:
+                return jsonify({'error': f'Không thể khởi tạo model HuggingFace: {str(e)}'}), 500
+        
         # Sử dụng method mới với article-based generation
         generated_samples = data_generator.generate_from_multiple_documents(
-            documents, topic.name, data_type, num_samples
+            documents, topic.name, data_type, num_samples, llm_type
         )
         
         # Lưu vào database với metadata chi tiết
@@ -484,8 +517,9 @@ def generate_training_data():
                 document_summary[doc_name] = document_summary.get(doc_name, 0) + 1
         
         return jsonify({
-            'message': f'Đã sinh {len(generated_samples)} mẫu dữ liệu {data_type}',
+            'message': f'Đã sinh {len(generated_samples)} mẫu dữ liệu {data_type} bằng {llm_type}',
             'total_samples': len(generated_samples),
+            'llm_type': llm_type,
             'document_distribution': document_summary,
             'documents_used': [{'title': doc.title, 'id': doc.id} for doc in documents],
             'samples': generated_samples[:5]  # Chỉ hiển thị 5 samples đầu để preview
@@ -780,6 +814,153 @@ def analyze_batch_coverage():
     
     except Exception as e:
         return jsonify({'error': f'Lỗi phân tích batch coverage: {str(e)}'}), 500
+
+# ==================== CSV DOCUMENT MANAGEMENT ====================
+
+@app.route('/api/csv/search', methods=['GET'])
+def search_csv_documents():
+    """Tìm kiếm tài liệu trong CSV file"""
+    try:
+        search_query = request.args.get('q', '')
+        limit = int(request.args.get('limit', 20))
+        offset = int(request.args.get('offset', 0))
+        
+        # Tìm kiếm trong CSV
+        results = vanban_csv.search_documents(search_query, limit=limit, offset=offset)
+        
+        return jsonify({
+            'results': results,
+            'query': search_query,
+            'total': len(results),
+            'limit': limit,
+            'offset': offset
+        })
+    
+    except Exception as e:
+        return jsonify({'error': f'Lỗi tìm kiếm CSV: {str(e)}'}), 500
+
+@app.route('/api/csv/document/<int:document_index>', methods=['GET'])
+def get_csv_document_preview(document_index):
+    """Lấy preview tài liệu từ CSV"""
+    try:
+        doc_data = vanban_csv.get_document_content(document_index)
+        
+        if not doc_data:
+            return jsonify({'error': 'Không tìm thấy tài liệu'}), 404
+        
+        content = doc_data.get('content', '')
+        title = doc_data.get('title', 'Không có tiêu đề')
+        
+        # Trả về preview (1000 ký tự đầu) hoặc full content
+        full = request.args.get('full', 'false').lower() == 'true'
+        
+        if full:
+            return jsonify({
+                'index': document_index,
+                'title': title,
+                'content': content,
+                'content_length': len(content),
+                'so_hieu': doc_data.get('so_hieu', ''),
+                'url': doc_data.get('url', '')
+            })
+        else:
+            preview = content[:1000] + "..." if len(content) > 1000 else content
+            
+            return jsonify({
+                'index': document_index,
+                'title': title,
+                'preview': preview,
+                'full_length': len(content),
+                'has_more': len(content) > 1000,
+                'so_hieu': doc_data.get('so_hieu', ''),
+                'url': doc_data.get('url', '')
+            })
+    
+    except Exception as e:
+        return jsonify({'error': f'Lỗi lấy preview: {str(e)}'}), 500
+
+@app.route('/api/csv/import/<int:document_index>', methods=['POST'])
+def import_csv_document(document_index):
+    """Import tài liệu từ CSV vào database"""
+    try:
+        data = request.get_json() or {}
+        doc_data = vanban_csv.get_document_content(document_index)
+        
+        if not doc_data:
+            return jsonify({'error': 'Không tìm thấy tài liệu trong CSV'}), 404
+        
+        content = doc_data.get('content', '')
+        title = data.get('title') or doc_data.get('title', f'Tài liệu CSV {document_index}')
+        
+        # Kiểm tra trùng lặp
+        existing = LegalDocument.query.filter_by(title=title).first()
+        if existing:
+            return jsonify({
+                'error': 'Tài liệu đã tồn tại',
+                'existing_id': existing.id
+            }), 409
+        
+        # Parse document structure
+        parsed_structure = None
+        articles_count = 0
+        try:
+            print(f"🔄 Parsing imported CSV document: {title}")
+            structure = legal_parser.parse_document(title, content)
+            parsed_structure = json.dumps(structure, ensure_ascii=False)
+            # Calculate articles count for performance
+            articles_count = len(structure.get('articles', []))
+            print(f"✅ CSV document parsed successfully - {articles_count} điều")
+        except Exception as e:
+            print(f"⚠️ CSV parsing failed: {str(e)}")
+        
+        # Tạo document mới với đúng document_type
+        document = LegalDocument(
+            title=title,
+            content=content,
+            parsed_structure=parsed_structure,
+            document_type='law',  # Set đúng type cho văn bản pháp luật
+            document_number=doc_data.get('so_hieu', ''),
+            uploaded_by='csv_import',
+            articles_count=articles_count
+        )
+        
+        db.session.add(document)
+        db.session.commit()
+        
+        return jsonify({
+            'id': document.id,
+            'title': document.title,
+            'parsed': parsed_structure is not None,
+            'content_length': len(content),
+            'message': 'Tài liệu CSV đã được import thành công'
+        }), 201
+    
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Lỗi import tài liệu: {str(e)}'}), 500
+
+@app.route('/api/csv/stats', methods=['GET'])
+def get_csv_stats():
+    """Lấy thống kê về CSV file"""
+    try:
+        # Lấy thống kê cơ bản
+        stats = {
+            'csv_file_path': vanban_csv.csv_file_path,
+            'file_exists': os.path.exists(vanban_csv.csv_file_path),
+            'total_documents': 0,
+            'sample_titles': []
+        }
+        
+        if stats['file_exists']:
+            # Đọc một chunk nhỏ để lấy thống kê
+            chunk = next(vanban_csv._read_csv_chunks(chunk_size=100))
+            stats['total_documents'] = len(chunk)
+            stats['sample_titles'] = chunk['title'].head(10).tolist() if 'title' in chunk.columns else []
+        
+        return jsonify(stats)
+    
+    except Exception as e:
+        return jsonify({'error': f'Lỗi lấy thống kê CSV: {str(e)}'}), 500
 
 if __name__ == '__main__':
     with app.app_context():
