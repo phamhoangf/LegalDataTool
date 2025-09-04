@@ -121,6 +121,39 @@ def delete_topic(topic_id):
         'message': 'Chủ đề đã được xóa thành công'
     })
 
+@app.route('/api/topics/<int:topic_id>/details', methods=['GET'])
+def get_topic_details(topic_id):
+    """Lấy chi tiết đầy đủ của chủ đề bao gồm nội dung tất cả documents"""
+    topic = LegalTopic.query.get_or_404(topic_id)
+    
+    # Lấy tất cả documents với nội dung đầy đủ
+    documents = db.session.query(LegalDocument).join(TopicDocument).filter(
+        TopicDocument.topic_id == topic_id
+    ).all()
+    
+    # Chuẩn bị dữ liệu documents với nội dung đầy đủ
+    full_documents = []
+    for doc in documents:
+        full_documents.append({
+            'id': doc.id,
+            'title': doc.title,
+            'content': doc.content,  # Nội dung đầy đủ
+            'document_type': doc.document_type,
+            'document_number': doc.document_number,
+            'uploaded_at': doc.uploaded_at.isoformat() if doc.uploaded_at else None,
+            'effective_date': doc.effective_date.isoformat() if doc.effective_date else None,
+            'source_url': doc.source_url
+        })
+    
+    return jsonify({
+        'id': topic.id,
+        'name': topic.name,
+        'description': topic.description,
+        'document_count': len(documents),
+        'documents': full_documents,
+        'created_at': topic.created_at.isoformat()
+    })
+
     # ----------- ASYNC CRAWL UTILS -----------
 TIMEOUT_SECONDS = 20
 MAX_CONCURRENT_REQUESTS = 15
@@ -323,6 +356,38 @@ def delete_document(document_id):
     
     return jsonify({
         'message': 'Đã xóa tài liệu thành công'
+    })
+
+@app.route('/api/documents/<int:document_id>/details', methods=['GET'])
+def get_document_details(document_id):
+    """Lấy chi tiết đầy đủ của tài liệu bao gồm nội dung hoàn chỉnh"""
+    document = LegalDocument.query.get_or_404(document_id)
+    
+    # Lấy các topic liên kết
+    topic_docs = TopicDocument.query.filter_by(document_id=document_id).all()
+    topics = []
+    for td in topic_docs:
+        topic = LegalTopic.query.get(td.topic_id)
+        if topic:
+            topics.append({
+                'id': topic.id,
+                'name': topic.name,
+                'description': topic.description
+            })
+    
+    return jsonify({
+        'id': document.id,
+        'title': document.title,
+        'content': document.content,  # Nội dung đầy đủ
+        'document_type': document.document_type,
+        'document_number': document.document_number,
+        'issued_date': document.issued_date.isoformat() if document.issued_date else None,
+        'effective_date': document.effective_date.isoformat() if document.effective_date else None,
+        'source_url': document.source_url,
+        'uploaded_at': document.uploaded_at.isoformat() if document.uploaded_at else None,
+        'updated_at': document.updated_at.isoformat() if document.updated_at else None,
+        'uploaded_by': document.uploaded_by,
+        'topics': topics
     })
 
 @app.route('/api/topics/<int:topic_id>/documents/<int:document_id>', methods=['DELETE'])

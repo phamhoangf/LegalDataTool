@@ -20,12 +20,14 @@ export const apiService = {
 
   // Topics
   getTopics: () => api.get('/topics'),
+  getTopicDetails: (id) => api.get(`/topics/${id}/details`),
   createTopic: (data) => api.post('/topics', data),
   updateTopic: (id, data) => api.put(`/topics/${id}`, data),
   deleteTopic: (id) => api.delete(`/topics/${id}`),
   
   // Documents
   getDocuments: () => api.get('/documents'),
+  getDocumentDetails: (id) => api.get(`/documents/${id}/details`),
   createDocument: (data) => api.post('/documents', data),
   updateDocument: (id, data) => api.put(`/documents/${id}`, data),
   deleteDocument: (id) => api.delete(`/documents/${id}`),
