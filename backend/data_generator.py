@@ -10,14 +10,8 @@ from pydantic import BaseModel
 from similarity_checker import QuestionSimilarityChecker
 from document_parsers import LegalDocumentParser
 
-# HuggingFace imports
-try:
-    from transformers import AutoTokenizer, AutoModelForCausalLM
-    import torch
-    HF_AVAILABLE = True
-except ImportError:
-    HF_AVAILABLE = False
-    print("⚠️ HuggingFace transformers not available. Install with: pip install transformers torch")
+# HuggingFace imports - simplified to use HTTP requests
+import requests
 
 class SourceReference(BaseModel):
     """Tham chiếu đến nguồn của thông tin"""
@@ -53,34 +47,17 @@ class DataGenerator:
         self.similarity_checker = QuestionSimilarityChecker(similarity_threshold=similarity_threshold)
         print(f"🔍 Initialized similarity checker with threshold {similarity_threshold}")
         
-        # HuggingFace model setup
-        self.hf_model = None
-        self.hf_tokenizer = None
+        # HuggingFace server URL - cấu hình URL server ngrok
+        self.hf_server_url = "https://evidently-cheerful-griffon.ngrok-free.app/generate"
         
         # Rate limiting for Gemini API (15 req/min = 4 seconds per request)
         self.last_api_call = 0
         self.min_interval = 4.0  # seconds between API calls
     
-    def init_huggingface_model(self, model_name: str = "phamhoangf/qwen3-4b-generate-data"):
-        """Initialize HuggingFace model"""
-        if not HF_AVAILABLE:
-            raise ImportError("HuggingFace transformers not available")
-        
-        try:
-            print(f"🤖 Loading HuggingFace model: {model_name}")
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            
-            self.hf_tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.hf_model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-                device_map="auto" if device == "cuda" else None
-            )
-            print(f"✅ HuggingFace model loaded on {device}")
-            
-        except Exception as e:
-            print(f"❌ Failed to load HuggingFace model: {str(e)}")
-            raise
+    def set_huggingface_server_url(self, url: str):
+        """Cấu hình URL server HuggingFace"""
+        self.hf_server_url = url
+        print(f"🔗 HuggingFace server URL updated: {url}")
     
     def generate_qa_with_gemini(self, prompt: str, temperature: float = 0.7) -> LegalQAList:
         """Sinh QA bằng Gemini API với rate limiting"""
@@ -110,35 +87,31 @@ class DataGenerator:
         return response.parsed
     
     def generate_qa_with_huggingface(self, prompt: str, temperature: float = 0.7) -> LegalQAList:
-        """Sinh QA bằng HuggingFace model"""
-        if not self.hf_model:
-            raise ValueError("HuggingFace model not initialized. Call init_huggingface_model() first")
-        
-        # Format prompt cho model
-        formatted_prompt = f"<|system|>Bạn là trợ lý AI chuyên về pháp luật Việt Nam. Hãy tạo câu hỏi và câu trả lời từ văn bản pháp luật.<|end|>\n<|user|>{prompt}<|end|>\n<|assistant|>"
-        
-        inputs = self.hf_tokenizer.encode(formatted_prompt, return_tensors="pt")
-        if self.hf_model.device.type == "cuda":
-            inputs = inputs.to("cuda")
-        
-        with torch.no_grad():
-            outputs = self.hf_model.generate(
-                inputs,
-                max_new_tokens=2048,
-                temperature=temperature,
-                do_sample=True,
-                top_p=0.9,
-                pad_token_id=self.hf_tokenizer.eos_token_id
-            )
-        
-        response_text = self.hf_tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
-        
-        # Parse JSON response
+        """Sinh QA bằng HuggingFace model qua HTTP API"""
         try:
-            response_json = json.loads(response_text)
-            return LegalQAList(**response_json)
-        except json.JSONDecodeError:
-            # Fallback - tạo single QA nếu không parse được
+            # Tạo payload như trong test_ngrok.py
+            messages = [{"role": "user", "content": prompt}]
+            payload = {"messages": messages}
+            
+            # Gửi request đến server
+            response = requests.post(self.hf_server_url, json=payload, timeout=60)
+            response.raise_for_status()
+            
+            # Lấy kết quả
+            result = response.json()
+            response_text = result.get('response', '')
+            
+            # Parse JSON response
+            try:
+                response_json = json.loads(response_text)
+                return LegalQAList(**response_json)
+            except json.JSONDecodeError:
+                # Fallback - tạo single QA nếu không parse được
+                return LegalQAList(qa_pairs=[LegalQA(question="Sample question", answer="Sample answer")])
+                
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Lỗi khi gọi HuggingFace server: {e}")
+            # Return fallback data
             return LegalQAList(qa_pairs=[LegalQA(question="Sample question", answer="Sample answer")])
     
     def generate_qa(self, prompt: str, llm_type: str = "gemini", temperature: float = 0.7) -> LegalQAList:
@@ -520,7 +493,16 @@ class DataGenerator:
     Answer: "Dựa trên điều luật trên, độ tuổi là 18 tuổi."
 
     Trả về output dưới dạng JSON với qa_pairs.
-        """
+    **ĐỊNH DẠNG OUTPUT MẪU:**
+    {
+    "qa_pairs": [
+        {
+        "question": "<Nội dung câu hỏi được tạo ra từ văn bản>",
+        "answer": "<Nội dung câu trả lời đầy đủ, diễn giải từ văn bản>"
+        }
+    ]
+    }
+    """
 
     def create_concept_understanding_prompt(self, content, topic, starter, focus, difficulty):
         """Prompt cho loại Concept Understanding - hiểu khái niệm, nguyên tắc"""

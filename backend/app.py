@@ -478,14 +478,9 @@ def generate_training_data():
         
         data_generator.update_similarity_corpus(existing_questions)
         
-        # Initialize HuggingFace model nếu cần
+        # No need to initialize HuggingFace model - using HTTP API
         if llm_type == 'huggingface':
-            try:
-                if not hasattr(data_generator, 'hf_model') or data_generator.hf_model is None:
-                    print(f"🤖 Initializing HuggingFace model for {llm_type}")
-                    data_generator.init_huggingface_model()
-            except Exception as e:
-                return jsonify({'error': f'Không thể khởi tạo model HuggingFace: {str(e)}'}), 500
+            print(f"🔗 Using HuggingFace model via HTTP API")
         
         # Sử dụng method mới với article-based generation
         generated_samples = data_generator.generate_from_multiple_documents(
