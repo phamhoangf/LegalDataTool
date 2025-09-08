@@ -11,6 +11,8 @@ from coverage_analyzer import CoverageAnalyzer
 from document_parsers import LegalDocumentParser
 from models import db, LegalTopic, LegalDocument, TopicDocument, GeneratedData, LabeledData
 from vanban_csv import VanBanCSVReader
+# Thêm xử lí các file
+from file_handler import process_file, validate_file_size, get_supported_formats
 
 # Load .env file từ parent directory
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -341,31 +343,38 @@ def upload_document_file():
     """Upload file tài liệu mà không cần liên kết với chủ đề"""
     if 'file' not in request.files:
         return jsonify({'error': 'Không có file được tải lên'}), 400
-    
+
     file = request.files['file']
     if file.filename == '':
         return jsonify({'error': 'Tên file không hợp lệ'}), 400
-    
+
     title = request.form.get('title', file.filename)
     document_type = request.form.get('document_type', 'law')
-    
-    # Đọc nội dung file
-    content = file.read().decode('utf-8', errors='ignore')
-    
+
+    # Xử lý file đa định dạng
+    file_content = file.read()
+    result = process_file(file_content, file.filename)
+    if not result.get('success'):
+        return jsonify({'error': result.get('error', 'Không thể xử lý file')}), 400
+
+    content = result.get('content', '')
+
     # Tạo document
     document = LegalDocument(
         title=title,
         content=content,
         document_type=document_type
     )
-    
+
     db.session.add(document)
     db.session.commit()
-    
+
     return jsonify({
         'id': document.id,
         'title': document.title,
-        'message': 'Tài liệu đã được tải lên thành công'
+        'message': 'Tài liệu đã được tải lên thành công',
+        'file_type': result.get('file_type'),
+        'metadata': result.get('metadata', {})
     }), 201
 
 @app.route('/api/upload', methods=['POST'])
@@ -373,40 +382,34 @@ def upload_legal_document():
     """Tải lên văn bản luật và liên kết với chủ đề"""
     if 'file' not in request.files:
         return jsonify({'error': 'Không có file được tải lên'}), 400
-    
+
     file = request.files['file']
     topic_id = request.form.get('topic_id')
     document_title = request.form.get('title', file.filename)
     document_type = request.form.get('document_type', 'law')
-    
+
     if file.filename == '':
         return jsonify({'error': 'Không có file được chọn'}), 400
-    
-    # Đọc nội dung file
-    content = file.read().decode('utf-8')
-    
-    # Parse document structure ngay khi upload
-    parsed_structure = None
-    try:
-        print(f"🔄 Parsing uploaded document: {document_title}")
-        structure = legal_parser.parse_document(document_title, content)
-        parsed_structure = json.dumps(structure, ensure_ascii=False)
-        print(f"✅ Uploaded document parsed successfully")
-    except Exception as e:
-        print(f"⚠️ Parsing failed: {str(e)}")
-    
+
+    # Xử lý file đa định dạng
+    file_content = file.read()
+    result = process_file(file_content, file.filename)
+    if not result.get('success'):
+        return jsonify({'error': result.get('error', 'Không thể xử lý file')}), 400
+
+    content = result.get('content', '')
+
     # Tạo document mới
     document = LegalDocument(
         title=document_title,
         content=content,
-        parsed_structure=parsed_structure,
         document_type=document_type,
         uploaded_by='user'
     )
-    
+
     db.session.add(document)
     db.session.flush()  # Để có ID
-    
+
     # Liên kết với topic nếu có
     if topic_id:
         topic = LegalTopic.query.get(topic_id)
@@ -417,14 +420,16 @@ def upload_legal_document():
                 relevance_score=1.0
             )
             db.session.add(topic_doc)
-    
+
     db.session.commit()
-    
+
     return jsonify({
         'message': 'File đã được tải lên và liên kết thành công',
         'document_id': document.id,
-        'content_length': len(content)
+        'file_type': result.get('file_type'),
+        'metadata': result.get('metadata', {})
     })
+
 
 @app.route('/api/generate', methods=['POST'])
 def generate_training_data():
