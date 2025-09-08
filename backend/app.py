@@ -13,6 +13,10 @@ from models import db, LegalTopic, LegalDocument, TopicDocument, GeneratedData, 
 from vanban_csv import VanBanCSVReader
 # Thêm xử lí các file
 from file_handler import process_file, validate_file_size, get_supported_formats
+# Phần đọc dữ liệu từ web
+import asyncio
+import aiohttp
+from bs4 import BeautifulSoup
 
 # Load .env file từ parent directory
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -127,6 +131,156 @@ def delete_topic(topic_id):
         'message': 'Chủ đề đã được xóa thành công'
     })
 
+#-----------------------------------------------------
+@app.route('/api/topics/<int:topic_id>/details', methods=['GET'])
+def get_topic_details(topic_id):
+    """Lấy chi tiết đầy đủ của chủ đề bao gồm nội dung tất cả documents"""
+    topic = LegalTopic.query.get_or_404(topic_id)
+    
+    # Lấy tất cả documents với nội dung đầy đủ
+    documents = db.session.query(LegalDocument).join(TopicDocument).filter(
+        TopicDocument.topic_id == topic_id
+    ).all()
+    
+    # Chuẩn bị dữ liệu documents với nội dung đầy đủ
+    full_documents = []
+    for doc in documents:
+        full_documents.append({
+            'id': doc.id,
+            'title': doc.title,
+            'content': doc.content,  # Nội dung đầy đủ
+            'document_type': doc.document_type,
+            'document_number': doc.document_number,
+            'uploaded_at': doc.uploaded_at.isoformat() if doc.uploaded_at else None,
+            'effective_date': doc.effective_date.isoformat() if doc.effective_date else None,
+            'source_url': doc.source_url
+        })
+    
+    return jsonify({
+        'id': topic.id,
+        'name': topic.name,
+        'description': topic.description,
+        'document_count': len(documents),
+        'documents': full_documents,
+        'created_at': topic.created_at.isoformat()
+    })
+
+@app.route('/api/documents/<int:document_id>/details', methods=['GET'])
+def get_document_details(document_id):
+    """Lấy chi tiết đầy đủ của tài liệu bao gồm nội dung hoàn chỉnh"""
+    document = LegalDocument.query.get_or_404(document_id)
+    
+    # Lấy các topic liên kết
+    topic_docs = TopicDocument.query.filter_by(document_id=document_id).all()
+    topics = []
+    for td in topic_docs:
+        topic = LegalTopic.query.get(td.topic_id)
+        if topic:
+            topics.append({
+                'id': topic.id,
+                'name': topic.name,
+                'description': topic.description
+            })
+    
+    return jsonify({
+        'id': document.id,
+        'title': document.title,
+        'content': document.content,  # Nội dung đầy đủ
+        'document_type': document.document_type,
+        'document_number': document.document_number,
+        'issued_date': document.issued_date.isoformat() if document.issued_date else None,
+        'effective_date': document.effective_date.isoformat() if document.effective_date else None,
+        'source_url': document.source_url,
+        'uploaded_at': document.uploaded_at.isoformat() if document.uploaded_at else None,
+        'updated_at': document.updated_at.isoformat() if document.updated_at else None,
+        'uploaded_by': document.uploaded_by,
+        'topics': topics
+    })
+# Xử lí với link vanbanphapluat.co
+TIMEOUT_SECONDS = 20
+MAX_CONCURRENT_REQUESTS = 15
+
+async def fetch_and_parse(session, url, semaphore):
+    """Tải và phân tích một trang văn bản duy nhất với nhiều selector fallback."""
+    async with semaphore:
+        try:
+            async with session.get(url, timeout=TIMEOUT_SECONDS) as response:
+                response.raise_for_status()
+                html = await response.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                # Fallback selector logic
+                selectors = [
+                    ('div', {'itemprop': 'articleBody'}),
+                    ('div', {'id': 'content'}),
+                    ('article', {}),
+                    ('div', {'class': 'main-content'}),
+                    ('div', {'class': 'content'}),
+                ]
+                for tag, attrs in selectors:
+                    found = soup.find(tag, attrs=attrs)
+                    if found and found.get_text(strip=True):
+                        return found.get_text(separator='\n', strip=True), None
+                # Nếu không tìm thấy, lấy toàn bộ body
+                body = soup.find('body')
+                if body and body.get_text(strip=True):
+                    return body.get_text(separator='\n', strip=True), "Đã lấy toàn bộ <body> do không tìm thấy selector đặc biệt."
+                return None, "Không tìm thấy nội dung phù hợp trên trang (đã thử nhiều selector)."
+        except Exception as e:
+            return None, f"Lỗi khi crawl: {str(e)}"
+@app.route('/api/crawl-law-document', methods=['POST'])
+def crawl_law_document():
+    """Crawl nội dung văn bản luật từ web, lưu thành document và liên kết với topic nếu có."""
+    data = request.get_json()
+    url = data.get('url')
+    topic_id = data.get('topic_id')
+    title = data.get('title')
+    if not url:
+        return jsonify({'error': 'Thiếu URL'}), 400
+    # Crawl nội dung (async)
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        content, crawl_note = loop.run_until_complete(fetch_law_content(url))
+    except Exception as e:
+        return jsonify({'error': f'Lỗi khi crawl: {str(e)}'}), 500
+    if not content:
+        return jsonify({'error': crawl_note or 'Không lấy được nội dung từ trang web'}), 400
+    # Lưu document
+    doc_title = title or url
+    document = LegalDocument(
+        title=doc_title,
+        content=content,
+        document_type='law',
+        uploaded_by='crawler'
+    )
+    db.session.add(document)
+    db.session.flush()  # Lấy document.id
+    # Liên kết với topic nếu có
+    if topic_id:
+        topic = LegalTopic.query.get(topic_id)
+        if topic:
+            topic_doc = TopicDocument(
+                topic_id=int(topic_id),
+                document_id=document.id,
+                relevance_score=1.0
+            )
+            db.session.add(topic_doc)
+    db.session.commit()
+    return jsonify({
+        'message': 'Đã crawl và lưu tài liệu thành công',
+        'document_id': document.id,
+        'title': document.title,
+        'note': crawl_note
+    })
+
+async def fetch_law_content(url):
+    """Hàm chính để crawl 1 URL, trả về (content, error)"""
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+    async with aiohttp.ClientSession() as session:
+        content, error = await fetch_and_parse(session, url, semaphore)
+        return content, error
+    
+#-------------------------------------------------------------------------
 @app.route('/api/documents', methods=['GET'])
 def get_documents():
     """Lấy danh sách tài liệu"""

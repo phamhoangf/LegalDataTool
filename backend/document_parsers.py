@@ -1,3 +1,60 @@
+# --- Hàm xử lý đầu vào file/crawl cho backend ---
+def process_input(input_data, input_type, title, parser=None):
+    """
+    Xử lý dữ liệu đầu vào (file hoặc crawl):
+    - input_data: đường dẫn file hoặc chuỗi text crawl
+    - input_type: 'pdf', 'docx', 'txt', 'text' (crawl)
+    - title: tiêu đề văn bản
+    - parser: instance của LegalDocumentParser (nếu có)
+    """
+    if input_type in ['pdf', 'docx', 'txt']:
+        return process_uploaded_file(input_data, input_type, title, parser)
+    elif input_type == 'text':
+        if parser is None:
+            from document_parsers import LegalDocumentParser
+            parser = LegalDocumentParser()
+        return parser.parse_document(title, input_data)
+    else:
+        raise ValueError("Unsupported input type")
+# --- Các hàm xử lý file đa nguồn, không ảnh hưởng code gốc ---
+import pdfplumber
+import docx
+import os
+
+def extract_text_from_pdf(pdf_path):
+    """Trích xuất text từ file PDF"""
+    with pdfplumber.open(pdf_path) as pdf:
+        return "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
+
+def extract_text_from_docx(docx_path):
+    """Trích xuất text từ file DOCX"""
+    doc = docx.Document(docx_path)
+    return "\n".join([para.text for para in doc.paragraphs])
+
+def extract_text_from_txt(txt_path):
+    """Trích xuất text từ file TXT"""
+    with open(txt_path, encoding='utf-8') as f:
+        return f.read()
+
+def process_uploaded_file(file_path, file_type, title, parser=None):
+    """
+    Nhận file bất kỳ, chuyển về text, parse bằng LegalDocumentParser
+    file_type: 'pdf', 'docx', 'txt'
+    title: tiêu đề văn bản
+    parser: instance của LegalDocumentParser (nếu có), nếu không sẽ tạo mới
+    """
+    if file_type == 'pdf':
+        text = extract_text_from_pdf(file_path)
+    elif file_type == 'docx':
+        text = extract_text_from_docx(file_path)
+    elif file_type == 'txt':
+        text = extract_text_from_txt(file_path)
+    else:
+        raise ValueError("Unsupported file type")
+    if parser is None:
+        from document_parsers import LegalDocumentParser
+        parser = LegalDocumentParser()
+    return parser.parse_document(title, text)
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """

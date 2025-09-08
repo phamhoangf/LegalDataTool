@@ -13,14 +13,19 @@ export const apiService = {
   // Health check
   healthCheck: () => api.get('/health'),
 
+  // Crawl dữ liệu từ web
+  crawlLawDocument: (data) => api.post('/crawl-law-document', data),
+
   // Topics
   getTopics: () => api.get('/topics'),
+  getTopicDetails: (id) => api.get(`/topics/${id}/details`),
   createTopic: (data) => api.post('/topics', data),
   updateTopic: (id, data) => api.put(`/topics/${id}`, data),
   deleteTopic: (id) => api.delete(`/topics/${id}`),
   
   // Documents
   getDocuments: () => api.get('/documents'),
+  getDocumentDetails: (id) => api.get(`/documents/${id}/details`),
   createDocument: (data) => api.post('/documents', data),
   updateDocument: (id, data) => api.put(`/documents/${id}`, data),
   deleteDocument: (id) => api.delete(`/documents/${id}`),

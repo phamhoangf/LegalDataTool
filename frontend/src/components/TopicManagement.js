@@ -39,8 +39,11 @@ const TopicManagement = () => {
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [uploadModalVisible, setUploadModalVisible] = useState(false);
+  const [detailModalVisible, setDetailModalVisible] = useState(false);
   const [previewModalVisible, setPreviewModalVisible] = useState(false);
   const [selectedTopic, setSelectedTopic] = useState(null);
+  const [selectedDocumentIndex, setSelectedDocumentIndex] = useState(0);
+  const [searchText, setSearchText] = useState('');
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [documentContent, setDocumentContent] = useState('');
   const [loadingDocument, setLoadingDocument] = useState(false);
@@ -110,6 +113,37 @@ const TopicManagement = () => {
     } finally {
       setLoadingDocument(false);
     }
+  };
+   const showTopicDetails = async (topic) => {
+    try {
+      setLoading(true);
+      // Lấy chi tiết đầy đủ của topic với tất cả documents
+      const response = await apiService.getTopicDetails(topic.id);
+      setSelectedTopic({
+        ...topic,
+        fullDocuments: response.data.documents || []
+      });
+      setSelectedDocumentIndex(0);
+      setSearchText('');
+      setDetailModalVisible(true);
+    } catch (error) {
+      // Fallback nếu API không có endpoint getTopicDetails
+      setSelectedTopic({
+        ...topic,
+        fullDocuments: topic.documents || []
+      });
+      setSelectedDocumentIndex(0);
+      setSearchText('');
+      setDetailModalVisible(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const highlightSearchText = (text, searchText) => {
+    if (!searchText) return text;
+    const regex = new RegExp(`(${searchText})`, 'gi');
+    return text.replace(regex, '<mark style="background-color: #ffeb3b;">$1</mark>');
   };
 
   const handleUploadDocument = async (file, topicId, documentTitle = null) => {
@@ -291,50 +325,51 @@ const TopicManagement = () => {
             <Button
               icon={<EyeOutlined />}
               size="small"
-              onClick={() => {
-                Modal.info({
-                  title: `Chi tiết: ${record.name}`,
-                  width: 700,
-                  content: (
-                    <div>
-                      <p><strong>Mô tả:</strong> {record.description}</p>
+              // onClick={() => {
+              //   Modal.info({
+              //     title: `Chi tiết: ${record.name}`,
+              //     width: 700,
+              //     content: (
+              //       <div>
+              //         <p><strong>Mô tả:</strong> {record.description}</p>
                       
-                      <Divider orientation="left">Tài liệu ({record.document_count || 0})</Divider>
-                      {record.documents && record.documents.length > 0 ? (
-                        <div style={{ marginBottom: 16 }}>
-                          {record.documents.map((doc, index) => (
-                            <Tag key={doc.id} color="blue" style={{ marginBottom: 4 }}>
-                              <FileTextOutlined /> {doc.title}
-                            </Tag>
-                          ))}
-                        </div>
-                      ) : (
-                        <p style={{ color: '#999', fontStyle: 'italic' }}>
-                          Chưa có tài liệu nào được liên kết
-                        </p>
-                      )}
+              //         <Divider orientation="left">Tài liệu ({record.document_count || 0})</Divider>
+              //         {record.documents && record.documents.length > 0 ? (
+              //           <div style={{ marginBottom: 16 }}>
+              //             {record.documents.map((doc, index) => (
+              //               <Tag key={doc.id} color="blue" style={{ marginBottom: 4 }}>
+              //                 <FileTextOutlined /> {doc.title}
+              //               </Tag>
+              //             ))}
+              //           </div>
+              //         ) : (
+              //           <p style={{ color: '#999', fontStyle: 'italic' }}>
+              //             Chưa có tài liệu nào được liên kết
+              //           </p>
+              //         )}
                       
-                      {record.legal_text && record.legal_text.trim().length > 0 && (
-                        <div>
-                          <Divider orientation="left">Nội dung văn bản</Divider>
-                          <div style={{ 
-                            maxHeight: 300, 
-                            overflow: 'auto',
-                            background: '#f5f5f5',
-                            padding: 12,
-                            borderRadius: 4,
-                            fontSize: '13px',
-                            lineHeight: '1.5'
-                          }}>
-                            {record.legal_text.substring(0, 2000)}
-                            {record.legal_text.length > 2000 && '...'}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ),
-                });
-              }}
+              //         {record.legal_text && record.legal_text.trim().length > 0 && (
+              //           <div>
+              //             <Divider orientation="left">Nội dung văn bản</Divider>
+              //             <div style={{ 
+              //               maxHeight: 300, 
+              //               overflow: 'auto',
+              //               background: '#f5f5f5',
+              //               padding: 12,
+              //               borderRadius: 4,
+              //               fontSize: '13px',
+              //               lineHeight: '1.5'
+              //             }}>
+              //               {record.legal_text.substring(0, 2000)}
+              //               {record.legal_text.length > 2000 && '...'}
+              //             </div>
+              //           </div>
+              //         )}
+              //       </div>
+              //     ),
+              //   });
+              // }}
+              onClick={() => showTopicDetails(record)}
             />
           </Tooltip>
           
@@ -598,50 +633,240 @@ const TopicManagement = () => {
               </Form>
             </div>
           </TabPane>
+          {/*---------------------------------------------------------- */}
+           <TabPane tab="🌐 Crawl từ Web" key="crawl">
+            <div style={{ padding: 16 }}>
+              <Form
+                layout="vertical"
+                onFinish={async (values) => {
+                  if (!selectedTopic) {
+                    message.error('Vui lòng chọn chủ đề!');
+                    return;
+                  }
+                  try {
+                    setLoading(true);
+                    const res = await apiService.crawlLawDocument({
+                      url: values.crawl_url,
+                      topic_id: selectedTopic.id,
+                      title: values.title || values.crawl_url
+                    });
+                    if (res.data && (res.data.document_id || res.data.message)) {
+                      message.success('Crawl và lưu tài liệu thành công!');
+                      setUploadModalVisible(false);
+                      // Luôn refresh lại topics/documents để đồng bộ UI
+                      await loadTopics();
+                      await loadDocuments();
+                    } else {
+                      message.error(res.data?.error || 'Crawl thất bại!');
+                    }
+                  } catch (err) {
+                    message.error(err?.response?.data?.error || 'Crawl thất bại!');
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+              >
+                <Form.Item
+                  name="crawl_url"
+                  label="Nhập URL trang web cần crawl"
+                  rules={[{ required: true, message: 'Vui lòng nhập URL!' }]}
+                >
+                  <Input placeholder="https://example.com/van-ban-phap-luat" />
+                </Form.Item>
+                <Form.Item name="title" label="Tiêu đề tài liệu (tùy chọn)">
+                  <Input placeholder="Tiêu đề tài liệu (nếu có)" />
+                </Form.Item>
+                <Form.Item>
+                  <Space>
+                    <Button type="primary" htmlType="submit" loading={loading}>
+                      Crawl & Thêm Tài Liệu
+                    </Button>
+                    <Button onClick={() => setUploadModalVisible(false)}>
+                      Hủy
+                    </Button>
+                  </Space>
+                </Form.Item>
+                <div style={{ color: '#888', fontSize: 13, marginTop: 8 }}>
+                  Tính năng này cho phép lấy nội dung văn bản pháp luật từ một trang web và tự động thêm vào chủ đề.
+                </div>
+              </Form>
+            </div>
+          </TabPane>
+          {/*----------------------------------------------------*/}
         </Tabs>
       </Modal>
       
       {/* Modal Preview Document */}
+      {/* Modal chi tiết chủ đề cải tiến */}
       <Modal
-        title={`Xem trước tài liệu: ${selectedDocument?.title || ''}`}
-        open={previewModalVisible}
-        onCancel={() => {
-          setPreviewModalVisible(false);
-          setSelectedDocument(null);
-          setDocumentContent('');
-        }}
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: 40 }}>
+            <span>📋 Chi tiết: {selectedTopic?.name}</span>
+            <Input.Search
+              placeholder="Tìm kiếm trong nội dung..."
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              style={{ width: 250, marginRight: 10 }}
+            />
+          </div>
+        }
+        open={detailModalVisible}
+        onCancel={() => setDetailModalVisible(false)}
+        width="60%"
+        style={{ top: 60, paddingBottom: 0 }}
+        bodyStyle={{ maxHeight: 'calc(100vh - 200px)', overflow: 'hidden' }}
         footer={[
-          <Button key="close" onClick={() => {
-            setPreviewModalVisible(false);
-            setSelectedDocument(null);
-            setDocumentContent('');
-          }}>
+          <Button key="close" onClick={() => setDetailModalVisible(false)}>
             Đóng
           </Button>
         ]}
-        width={800}
-        zIndex={2000}
       >
-        <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
-          {loadingDocument ? (
-            <div style={{ textAlign: 'center', padding: '20px' }}>
-              <Spin />
-              <p style={{ marginTop: 8 }}>Đang tải nội dung...</p>
+        {selectedTopic && (
+          <div>
+            <div style={{ marginBottom: 16 }}>
+              <p><strong>📝 Mô tả:</strong> {selectedTopic.description}</p>
+              <p><strong>📊 Tổng số tài liệu:</strong> {selectedTopic.fullDocuments?.length || selectedTopic.documents?.length || 0}</p>
             </div>
-          ) : (
-            <div style={{ 
-              whiteSpace: 'pre-wrap', 
-              wordBreak: 'break-word',
-              lineHeight: '1.6',
-              padding: '16px',
-              background: '#f5f5f5',
-              borderRadius: '6px',
-              fontSize: '14px'
-            }}>
-              {documentContent || 'Không có nội dung'}
-            </div>
-          )}
-        </div>
+
+            {selectedTopic.fullDocuments?.length > 0 || selectedTopic.documents?.length > 0 ? (
+              <div>
+                {/* Navigation tabs cho documents */}
+                <Tabs
+                  activeKey={selectedDocumentIndex.toString()}
+                  onChange={(key) => setSelectedDocumentIndex(parseInt(key))}
+                  type="card"
+                  size="small"
+                >
+                  {(selectedTopic.fullDocuments || selectedTopic.documents || []).map((doc, index) => (
+                    <TabPane
+                      tab={
+                        <span>
+                          <FileTextOutlined />
+                          {doc.title || `Tài liệu ${index + 1}`}
+                          {doc.content && (
+                            <span style={{ color: '#666', fontSize: '11px', marginLeft: 4 }}>
+                              ({Math.round(doc.content.length / 1000)}k ký tự)
+                            </span>
+                          )}
+                        </span>
+                      }
+                      key={index.toString()}
+                    >
+                      <div>
+                        {/* Thông tin document */}
+                        <div style={{ 
+                          background: '#f0f2f5', 
+                          padding: 12, 
+                          borderRadius: 6,
+                          marginBottom: 16 
+                        }}>
+                          <Space direction="vertical" size="small">
+                            <Text><strong>📋 Tiêu đề:</strong> {doc.title}</Text>
+                            {doc.document_type && (
+                              <Text><strong>📂 Loại:</strong> {doc.document_type}</Text>
+                            )}
+                            {doc.uploaded_at && (
+                              <Text><strong>⏰ Tải lên:</strong> {new Date(doc.uploaded_at).toLocaleString('vi-VN')}</Text>
+                            )}
+                            {/* Hiển thị số chương, mục, điều nếu có */}
+                            {doc.num_chapter && (
+                              <Text><strong>📚 Số chương:</strong> {doc.num_chapter}</Text>
+                            )}
+                            {doc.num_section && (
+                              <Text><strong>📑 Số mục:</strong> {doc.num_section}</Text>
+                            )}
+                            {doc.num_article && (
+                              <Text><strong>📄 Số điều:</strong> {doc.num_article}</Text>
+                            )}
+                            {doc.num_chunk && (
+                              <Text><strong>🔹 Số chunk:</strong> {doc.num_chunk}</Text>
+                            )}
+                            {doc.chunks && Array.isArray(doc.chunks) && (
+                              <Text><strong>� Số điều:</strong> {doc.chunks.length}</Text>
+                            )}
+                            {/* Nếu không có thông tin trên, fallback về số ký tự */}
+                            {!doc.num_chapter && !doc.num_section && !doc.num_article && !doc.num_chunk && !doc.chunks && (
+                              <Text><strong>�📏 Độ dài:</strong> {doc.content?.length || 0} ký tự</Text>
+                            )}
+                          </Space>
+                        </div>
+
+                        {/* Nội dung document */}
+                        {doc.content ? (
+                          <div style={{ 
+                            background: '#fafafa',
+                            border: '1px solid #d9d9d9',
+                            borderRadius: 6,
+                            maxHeight: '50vh',
+                            overflow: 'auto'
+                          }}>
+                            <div style={{ 
+                              padding: 16,
+                              fontSize: '14px',
+                              lineHeight: '1.6',
+                              fontFamily: 'monospace'
+                            }}>
+                              <div
+                                dangerouslySetInnerHTML={{
+                                  __html: highlightSearchText(doc.content, searchText)
+                                }}
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ 
+                            textAlign: 'center', 
+                            padding: 40,
+                            color: '#999',
+                            fontStyle: 'italic' 
+                          }}>
+                            Không có nội dung để hiển thị
+                          </div>
+                        )}
+
+                        {/* Statistics */}
+                        {doc.content && (
+                          <div style={{ 
+                            marginTop: 16,
+                            padding: 12,
+                            background: '#e6f7ff',
+                            borderRadius: 6,
+                            fontSize: '12px'
+                          }}>
+                            <Space>
+                              <Text>📊 Thống kê:</Text>
+                              <Text>{doc.content.split(' ').length} từ</Text>
+                              <Text>{doc.content.split('\n').length} dòng</Text>
+                              {searchText && (
+                                <Text style={{ color: '#1890ff' }}>
+                                  {(doc.content.match(new RegExp(searchText, 'gi')) || []).length} kết quả tìm kiếm
+                                </Text>
+                              )}
+                            </Space>
+                          </div>
+                        )}
+                      </div>
+                    </TabPane>
+                  ))}
+                </Tabs>
+              </div>
+            ) : (
+              <div style={{ 
+                textAlign: 'center', 
+                padding: 60,
+                background: '#fafafa',
+                borderRadius: 6,
+                color: '#999' 
+              }}>
+                <FileTextOutlined style={{ fontSize: 48, marginBottom: 16 }} />
+                <p style={{ fontSize: 16, marginBottom: 8 }}>Chưa có tài liệu nào</p>
+                <p style={{ fontSize: 14 }}>
+                  Hãy thêm tài liệu để xem nội dung chi tiết
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </Modal>
     </div>
   );
