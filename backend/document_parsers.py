@@ -67,334 +67,321 @@ import json
 import random
 from typing import Dict, List, Any
 
+"""
+Legal Document Parser Module - Version with Header Normalization & Quote State Tracking
+"""
+
+import re
+import pandas as pd
+from typing import Dict, List, Any, Tuple
+
 class LegalDocumentParser:
-    """Parse văn bản pháp luật thành cấu trúc hierarchical JSON"""
+    """
+    [NÂNG CẤP LẦN 3] Thêm cơ chế chuẩn hóa header đa dòng (Điều \n 1) và
+    xử lý cấu trúc Điều -> Điểm (không có Khoản).
+    """
     
     def __init__(self):
-        # Patterns để nhận diện các cấp độ
         self.patterns = {
-            'chuong': r'CHƯƠNG\s+([IVXLC]+|[0-9]+)\.?\s*([^\n\r]*)',
-            'muc': r'Mục\s+(\d+)\.?\s*([^\n\r]*)', 
-            'dieu': r'Điều\s+(\d+)\.?\s*([^\n\r]*)'
+            'chuong_header': r'^Chương\s+([IVXLCDM]+)',
+            'muc_header': r'^\s*Mục\s+(\d+)',
+            'dieu_header': r'(?m)^\s*Điều(?:\s|\n)*(\d+)\.?\s*',
+            'khoan_header': r'^\s*(\d+)[\.\-]?\s*(.*)',
+            'diem_header': r'^\s*([a-z])\)\s*(.*)'
         }
-    
-    def parse_document(self, title: str, content: str) -> Dict[str, Any]:
-        """
-        Parse toàn bộ document thành cấu trúc JSON
-        
-        Args:
-            title: Tên tài liệu
-            content: Nội dung văn bản
-            
-        Returns:
-            Dict: Cấu trúc JSON của tài liệu
-        """
-        print(f"📄 Parsing document: {title}")
-        
-        # Làm sạch content
-        content = self._clean_content(content)
-        
-        lines = content.strip().split('\n')
-        
-        # Khởi tạo structure
-        document_structure = {
-            'title': title,
-            'type': 'document',
-            'content_length': len(content),
-            'chapters': [],
-            'total_articles': 0,
-            'metadata': {
-                'has_chapters': False,
-                'has_sections': False,
-                'parsing_stats': {}
-            }
-        }
-        
-        # State tracking
-        current_chapter = None
-        current_section = None
-        current_article = None
-        
-        article_count = 0
-        
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if not line:
-                continue
-                
-            # 1. Kiểm tra CHƯƠNG
-            chapter_match = re.match(self.patterns['chuong'], line, re.IGNORECASE)
-            if chapter_match:
-                # Tìm title của chương ở dòng tiếp theo (nếu có)
-                chapter_title = ""
-                if i + 1 < len(lines):
-                    next_line = lines[i + 1].strip()
-                    # Nếu dòng tiếp theo không phải là pattern đặc biệt, coi là title
-                    if (next_line and 
-                        not re.match(self.patterns['chuong'], next_line, re.IGNORECASE) and
-                        not re.match(self.patterns['muc'], next_line, re.IGNORECASE) and
-                        not re.match(self.patterns['dieu'], next_line, re.IGNORECASE)):
-                        chapter_title = next_line
-                
-                current_chapter = self._create_chapter(chapter_match, i, chapter_title)
-                document_structure['chapters'].append(current_chapter)
-                current_section = None
-                current_article = None
-                document_structure['metadata']['has_chapters'] = True
-                continue
-            
-            # 2. Kiểm tra MỤC
-            section_match = re.match(self.patterns['muc'], line, re.IGNORECASE)
-            if section_match:
-                current_section = self._create_section(section_match, i)
-                if current_chapter:
-                    current_chapter['sections'].append(current_section)
-                else:
-                    # Mục độc lập không thuộc chương nào
-                    if 'independent_sections' not in document_structure:
-                        document_structure['independent_sections'] = []
-                    document_structure['independent_sections'].append(current_section)
-                current_article = None
-                document_structure['metadata']['has_sections'] = True
-                continue
-                
-            # 3. Kiểm tra ĐIỀU
-            article_match = re.match(self.patterns['dieu'], line, re.IGNORECASE)
-            if article_match:
-                current_article = self._create_article(article_match, i, lines)
-                article_count += 1
-                
-                # Xác định article này thuộc về đâu
-                if current_section:
-                    current_section['articles'].append(current_article)
-                elif current_chapter:
-                    current_chapter['articles'].append(current_article)
-                else:
-                    # Article độc lập
-                    if 'independent_articles' not in document_structure:
-                        document_structure['independent_articles'] = []
-                    document_structure['independent_articles'].append(current_article)
-                continue
-        
-        # Tính toán thống kê cuối cùng
-        document_structure['total_articles'] = article_count
-        document_structure['metadata']['parsing_stats'] = {
-            'chapters': len(document_structure.get('chapters', [])),
-            'total_sections': self._count_sections(document_structure),
-            'articles': article_count
-        }
-        
-        # Thêm list tất cả articles vào structure để sử dụng cho Monte Carlo
-        document_structure['articles'] = self.get_all_articles(document_structure)
-        
-        print(f"✅ Parsed successfully:")
-        print(f"   📚 Chapters: {document_structure['metadata']['parsing_stats']['chapters']}")
-        print(f"   📋 Sections: {document_structure['metadata']['parsing_stats']['total_sections']}")
-        print(f"   📜 Articles: {document_structure['metadata']['parsing_stats']['articles']}")
-        
-        return document_structure
+        self.MIN_UNIT_LENGTH = 800
+        self.MAX_UNIT_LENGTH = 1200
 
-    def _clean_content(self, content: str) -> str:
-        """Làm sạch nội dung văn bản"""
-        # Loại bỏ các ký tự thừa
-        content = re.sub(r'\r\n', '\n', content)
-        content = re.sub(r'\r', '\n', content)
+
+    def _normalize_khoan_headers(self, lines: List[str]) -> List[str]:
+        """
+        [HÀM CŨ] Tiền xử lý để gộp các header của Khoản bị ngắt dòng.
+        """
+        content_str = "\n".join(lines)
+        normalized_content = re.sub(r'\n\s*(\d+)\s*\n\s*\.\s*', r'\n\1. ', content_str)
+        return normalized_content.split('\n')
+
+    def _normalize_multiline_headers(self, content: str) -> str:
+        """
+        [HÀM MỚI] Tiền xử lý để gộp các header chính bị ngắt dòng.
+        Ví dụ: "Điều\n1" -> "Điều 1", "Chương\nI" -> "Chương I"
+        Sử dụng cờ re.MULTILINE để `^` khớp với đầu mỗi dòng.
+        """
+        # Gộp dòng cho Chương, Mục, Điều
+        content = re.sub(r'^(Chương|Mục|Điều)\s*\n\s*([IVXLCDM\d]+)', r'\1 \2', content, flags=re.MULTILINE | re.IGNORECASE)
         return content
 
-    def _create_chapter(self, match, line_num: int, chapter_title: str = "") -> Dict[str, Any]:
-        """Tạo structure cho chương"""
-        number = match.group(1)
-        title = match.group(2).strip() or chapter_title
+    def parse_document(self, title: str, content: str) -> Dict[str, Any]:
+        """[CÓ SỬA LỖI] CẤP 1: Tách khối Điều, bỏ qua các header 'Điều' trong trích dẫn."""
+        print(f"📄 Parsing document: {title}")
+        content = self._clean_content(content)
         
-        return {
-            'type': 'chapter',
-            'number': number,
-            'title': title,
-            'line_number': line_num,
-            'sections': [],
-            'articles': []  # Articles trực tiếp thuộc chapter (không thuộc section)
-        }
+        # # << BƯỚC SỬA LỖI MỚI >>
+        content = self._normalize_multiline_headers(content)
 
-    def _create_section(self, match, line_num: int) -> Dict[str, Any]:
-        """Tạo structure cho mục"""
-        number = match.group(1)
-        title = match.group(2).strip()
-        
-        return {
-            'type': 'section',
-            'number': number,
-            'title': title,
-            'line_number': line_num,
-            'articles': []
-        }
-
-    def _create_article(self, match, line_num: int, all_lines: List[str]) -> Dict[str, Any]:
-        """Tạo structure cho điều"""
-        number = match.group(1)
-        title = match.group(2).strip()
-        
-        # Extract content cho article này
-        content = self._extract_article_content(line_num, all_lines)
-        
-        # Parse paragraphs
-        paragraphs = self._parse_paragraphs(content)
-        
-        return {
-            'type': 'article',
-            'number': number,
-            'title': title,
-            'line_number': line_num,
-            'content': content,
-            'content_length': len(content),
-            'paragraphs': paragraphs,
-            'paragraph_count': len(paragraphs)
-        }
-
-    def _extract_article_content(self, start_line: int, all_lines: List[str]) -> str:
-        """Extract nội dung của một article"""
-        content_lines = []
-        
-        # Bắt đầu từ dòng hiện tại (header của article)
-        for i in range(start_line, len(all_lines)):
-            line = all_lines[i].strip()
-            
-            # Stop khi gặp article tiếp theo, chapter, hoặc section
-            if i > start_line:  # Skip dòng đầu (header)
-                if (re.match(self.patterns['dieu'], line, re.IGNORECASE) or
-                    re.match(self.patterns['chuong'], line, re.IGNORECASE) or
-                    re.match(self.patterns['muc'], line, re.IGNORECASE)):
-                    break
-            
-            content_lines.append(line)
-        
-        return '\n'.join(content_lines)
-
-    def _parse_paragraphs(self, content: str) -> List[str]:
-        """Parse content thành các paragraphs"""
         lines = content.split('\n')
-        paragraphs = []
+        document_structure = {'title': title, 'articles': []}
         
-        current_paragraph = []
-        for line in lines:
-            line = line.strip()
-            if line:
-                current_paragraph.append(line)
+        article_blocks, current_block_lines = [], []
+        parsing_context = {'chuong': None, 'muc': None}
+        last_valid_article_num = 0
+        in_quote = False
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            # Loại bỏ dấu chấm sau số thứ tự Điều nếu có, để xử lý nhất quán
+            # line = re.sub(r'^(Điều\s+\d+)\.', r'\1', line)
+            line = re.sub(r'^\s*(Điều\s+\d+)\.', r'\1', line)
+
+            is_header_candidate = not in_quote
+            chuong_match = is_header_candidate and re.match(self.patterns['chuong_header'], line.strip(), re.IGNORECASE)
+            if chuong_match:
+                if current_block_lines: article_blocks.append((parsing_context.copy(), current_block_lines))
+                chuong_id = chuong_match.group(1); i, chuong_title = self._extract_multiline_title(lines, i)
+                chuong_title = re.sub(self.patterns['chuong_header'], '', chuong_title, 1, re.IGNORECASE).strip()
+                parsing_context['chuong'] = f"Chương {chuong_id}: {chuong_title}"; parsing_context['muc'] = None; 
+                # last_valid_article_num = 0; current_block_lines = []
+                i += 1; continue
+            muc_match = is_header_candidate and re.match(self.patterns['muc_header'], line.strip(), re.IGNORECASE)
+            if muc_match:
+                if current_block_lines: article_blocks.append((parsing_context.copy(), current_block_lines))
+                muc_id = muc_match.group(1); i, muc_title = self._extract_multiline_title(lines, i)
+                muc_title = re.sub(self.patterns['muc_header'], '', muc_title, 1, re.IGNORECASE).strip()
+                parsing_context['muc'] = f"Mục {muc_id}: {muc_title}"; 
+                # last_valid_article_num = 0; current_block_lines = []
+                i += 1; continue
+            # dieu_match = is_header_candidate and re.match(self.patterns['dieu_header'], line)
+            dieu_match = is_header_candidate and re.match(self.patterns['dieu_header'], line.strip())
+
+            is_new_valid_article = False
+            if dieu_match and int(dieu_match.group(1)) == last_valid_article_num + 1: is_new_valid_article = True
+            if is_new_valid_article:
+                if current_block_lines: article_blocks.append((parsing_context.copy(), current_block_lines))
+                current_block_lines = [line]; last_valid_article_num = int(dieu_match.group(1))
+            elif line.strip() or current_block_lines:
+                current_block_lines.append(line)
+            
+            quote_char_count = line.count('“') + line.count('”')
+            # quote_char_count = sum(line.count(q) for q in self.ALL_QUOTES)
+            if quote_char_count % 2 != 0: in_quote = not in_quote
+            i += 1
+        if current_block_lines: article_blocks.append((parsing_context.copy(), current_block_lines))
+        for context, block_lines in article_blocks:
+            if block_lines and re.match(self.patterns['dieu_header'], block_lines[0]):
+                article_object = self._process_article_block(title, context, block_lines)
+                if article_object: document_structure['articles'].append(article_object)
+        print(f"✅ Parsed successfully: Found and processed {len(document_structure['articles'])} articles."); 
+        return document_structure
+        # return len(document_structure['articles']), document_structure
+
+    def _parse_article_content(self, article_number: str, base_path: str, article_content_lines: List[str]) -> List[Dict]:
+        """[CÓ SỬA LỖI] CẤP 2: Chuẩn hóa header, tách khối Khoản hoặc xử lý trực tiếp Điểm."""
+        article_content_lines = self._normalize_khoan_headers(article_content_lines)
+        
+        units = []
+        khoan_blocks_of_lines, current_block = [], []
+        last_valid_khoan_num = 0
+        in_quote = False
+        for line in article_content_lines:
+            is_new_valid_khoan = False
+            if not in_quote:
+                match = re.match(self.patterns['khoan_header'], line.strip())
+                if match:
+                    current_num = int(match.group(1))
+                    if current_num == last_valid_khoan_num + 1: is_new_valid_khoan = True
+            if is_new_valid_khoan:
+                if current_block: khoan_blocks_of_lines.append(current_block)
+                current_block = [line]; last_valid_khoan_num = current_num
+            elif line.strip() or current_block:
+                if not current_block and not line.strip(): continue
+                current_block.append(line)
+            quote_char_count = line.count('“') + line.count('”')
+            if quote_char_count % 2 != 0: in_quote = not in_quote
+        if current_block: khoan_blocks_of_lines.append(current_block)
+        
+        # <<< SỬA LỖI LOGIC FALLBACK ĐA CẤP >>>
+        if last_valid_khoan_num == 0:
+            # Nếu không có Khoản, kiểm tra xem có cấu trúc Điểm không
+            has_diem_structure = any(re.match(self.patterns['diem_header'], line.strip()) for line in article_content_lines)
+            
+            if has_diem_structure:
+                # Nếu có Điểm, xử lý toàn bộ nội dung Điều như một "Khoản" không tên
+                # Ta truyền một list các dòng giả mạo vào _group_diem_within_khoan
+                # để hàm đó có thể chạy mà không cần header Khoản thật.
+                # Dòng header giả "0. " sẽ bị bỏ qua khi tạo intro_text.
+                fake_khoan_lines = ["0. "] + article_content_lines
+                diem_units = self._group_diem_within_khoan(article_number, base_path, fake_khoan_lines)
+                # Sửa lại path và source_khoan cho đúng
+                for unit in diem_units:
+                    unit['path'] = unit['path'].replace(" > Khoản 0", "")
+                    unit['source_khoan'] = 'N/A'
+                return diem_units
             else:
-                if current_paragraph:
-                    paragraphs.append(' '.join(current_paragraph))
-                    current_paragraph = []
-        
-        # Thêm paragraph cuối nếu có
-        if current_paragraph:
-            paragraphs.append(' '.join(current_paragraph))
-        
-        return paragraphs
+                # Nếu không có Khoản và không có Điểm, coi cả Điều là 1 unit
+                full_content = "\n".join(article_content_lines).strip()
+                if full_content:
+                    units.append({'path': base_path, 'content': full_content, 'content_length_no_spaces': len(re.sub(r'\s', '', full_content)), 'source_article': article_number, 'source_khoan': 'N/A', 'source_diem': 'N/A'})
+                return units
 
-    def _count_sections(self, document: Dict[str, Any]) -> int:
-        """Đếm tổng số sections trong document"""
-        total = 0
-        
-        # Đếm sections trong các chapters
-        for chapter in document.get('chapters', []):
-            total += len(chapter.get('sections', []))
-        
-        # Đếm independent sections
-        total += len(document.get('independent_sections', []))
-        
-        return total
+        for khoan_lines in khoan_blocks_of_lines:
+            khoan_units = self._group_diem_within_khoan(article_number, base_path, khoan_lines)
+            units.extend(khoan_units)
+        return units
 
-    def get_all_articles(self, document: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Extract tất cả articles từ document để sử dụng cho Monte Carlo sampling
+    def _group_diem_within_khoan(self, article_number: str, base_path: str, khoan_lines: List[str]) -> List[Dict]:
+        """[CÓ SỬA LỖI] CẤP 3: Xử lý Khoản, bỏ qua header 'Điểm' trong trích dẫn."""
+        units = []
+        khoan_header_match = re.match(self.patterns['khoan_header'], khoan_lines[0].strip())
+        # Sửa đổi: Nếu không khớp header, vẫn có thể xử lý (trường hợp Điều -> Điểm)
+        khoan_id = khoan_header_match.group(1) if khoan_header_match else "0"
+
+        diem_blocks_of_lines, current_block = [], []
+        # Nếu không có header Khoản, toàn bộ dòng đầu tiên là nội dung
+        khoan_intro_lines = [khoan_lines[0]] if khoan_header_match else []
+        content_start_index = 1 if khoan_header_match else 0
         
-        Args:
-            document: Document structure đã parse
-            
-        Returns:
-            List of all articles with metadata
-        """
-        articles = []
+        diem_started = False
+        in_quote = False
+        for line in khoan_lines[content_start_index:]:
+            is_new_diem = False
+            if not in_quote:
+                match = re.match(self.patterns['diem_header'], line.strip())
+                if match and not re.match(r'^\d+[a-z]\.', line.strip()):
+                    is_new_diem = True
+            if is_new_diem:
+                if not diem_started:
+                    diem_started = True; current_block = [line]
+                else:
+                    if current_block: diem_blocks_of_lines.append(current_block)
+                    current_block = [line]
+            elif diem_started:
+                current_block.append(line)
+            else:
+                khoan_intro_lines.append(line)
+            quote_char_count = line.count('“') + line.count('”')
+            if quote_char_count % 2 != 0: in_quote = not in_quote
+        if current_block: diem_blocks_of_lines.append(current_block)
         
-        # Articles trong chapters và sections
-        for chapter in document.get('chapters', []):
-            chapter_path = f"Chương {chapter['number']}"
+        if not diem_started:
+            khoan_content = "\n".join(khoan_lines).strip()
+            # Chỉ tạo unit nếu đây là một Khoản thực sự (có header)
+            if khoan_content and khoan_header_match:
+                units.append({'path': f"{base_path} > Khoản {khoan_id}", 'content': khoan_content, 'content_length_no_spaces': len(re.sub(r'\s', '', khoan_content)), 'source_article': article_number, 'source_khoan': khoan_id, 'source_diem': 'N/A'})
+            return units
             
-            # Articles trực tiếp trong chapter
-            for article in chapter.get('articles', []):
-                articles.append({
-                    'number': article['number'],
-                    'title': article['title'],
-                    'content': article['content'],
-                    'content_length': article['content_length'],
-                    'path': f"{chapter_path}/Điều {article['number']}",
-                    'location': {
-                        'chapter': chapter['number'],
-                        'section': None
-                    },
-                    'metadata': {
-                        'line_number': article['line_number'],
-                        'paragraph_count': article.get('paragraph_count', 0)
+        khoan_intro_text = "\n".join(khoan_intro_lines).strip()
+        # Bỏ header giả "0." nếu có
+        if khoan_intro_text == "0.": khoan_intro_text = ""
+        
+        current_group_blocks, current_group_length = [], 0
+        for block in diem_blocks_of_lines:
+            block_content = "\n".join(block).strip(); block_length = len(re.sub(r'\s', '', block_content))
+            if not current_group_blocks:
+                current_group_blocks.append(block); current_group_length = block_length
+            elif current_group_length + block_length > self.MAX_UNIT_LENGTH and current_group_length >= self.MIN_UNIT_LENGTH:
+                unit = self._create_unit_from_diem_group(article_number, base_path, khoan_id, khoan_intro_text, current_group_blocks)
+                if unit: units.append(unit)
+                current_group_blocks, current_group_length = [block], block_length
+            else:
+                current_group_blocks.append(block); current_group_length += block_length
+            if current_group_length >= self.MIN_UNIT_LENGTH:
+                unit = self._create_unit_from_diem_group(article_number, base_path, khoan_id, khoan_intro_text, current_group_blocks)
+                if unit: units.append(unit)
+                current_group_blocks, current_group_length = [], 0
+        if current_group_blocks:
+            unit = self._create_unit_from_diem_group(article_number, base_path, khoan_id, khoan_intro_text, current_group_blocks)
+            if unit: units.append(unit)
+        return units
+
+    # ==============================================================================
+    # CÁC HÀM TRỢ GIÚP (KHÔNG THAY ĐỔI)
+    # ==============================================================================
+    def _extract_multiline_title(self, lines: List[str], start_index: int) -> Tuple[int, str]:
+        title_lines = [lines[start_index].strip()]; i = start_index + 1
+        while i < len(lines):
+            line = lines[i].strip()
+            if re.match(self.patterns['dieu_header'], line) or re.match(self.patterns['muc_header'], line) or re.match(self.patterns['khoan_header'], line) or re.match(self.patterns['chuong_header'], line, re.IGNORECASE) or (not line and title_lines): break
+            if line: title_lines.append(line)
+            i += 1
+        return i - 1, ' '.join(title_lines)
+    def _process_article_block(self, doc_title: str, context: Dict, article_lines: List[str]) -> Dict:
+        match = re.match(self.patterns['dieu_header'], article_lines[0])
+        if not match: return None
+        
+        article_number = match.group(1)
+        # Tách tiêu đề có thể có trên cùng dòng với 'Điều X.'
+        title_on_first_line = re.sub(self.patterns['dieu_header'], '', article_lines[0]).strip()
+        title_lines = [title_on_first_line] if title_on_first_line else []
+        
+        content_start_index = 1
+        for i in range(1, len(article_lines)):
+            line_strip = article_lines[i].strip()
+            
+            # Điều kiện dừng 1: Gặp một cấu trúc rõ ràng như Khoản hoặc Điểm.
+            is_content_marker = (
+                re.match(self.patterns['khoan_header'], line_strip) or
+                re.match(self.patterns['diem_header'], line_strip)
+            )
+            
+            # Điều kiện dừng 2: Gặp một đoạn văn mới.
+            # Chỉ coi là đoạn văn mới nếu đã có ít nhất một dòng tiêu đề.
+            has_title = any(t.strip() for t in title_lines)
+            is_new_paragraph = has_title and re.match(r'^[A-ZÀ-Ỹ]', line_strip)
+
+            if is_content_marker or is_new_paragraph:
+                break
+
+            # Nếu chưa dừng, tiếp tục thêm dòng này vào tiêu đề
+            if line_strip:
+                title_lines.append(line_strip)
+            content_start_index = i + 1
+            
+        article_title = ' '.join(filter(None, title_lines))
+        article_content_lines = article_lines[content_start_index:]
+        
+        path_parts = [doc_title]
+        if context.get('chuong'): path_parts.append(context['chuong'])
+        if context.get('muc'): path_parts.append(context['muc'])
+        path_parts.append(f"Điều {article_number}: {article_title}"); base_path = " > ".join(path_parts)
+        
+        units = self._parse_article_content(article_number, base_path, article_content_lines)
+        return {'number': article_number, 'title': article_title, 'units': units}
+
+    def _create_unit_from_diem_group(self, article_number: str, base_path: str, khoan_id: str, khoan_intro_text: str, group_of_diem_blocks: List[List[str]]) -> Dict:
+        if not group_of_diem_blocks: return None
+        first_diem_match = re.match(self.patterns['diem_header'], group_of_diem_blocks[0][0].strip()); last_diem_match = re.match(self.patterns['diem_header'], group_of_diem_blocks[-1][0].strip())
+        if not first_diem_match or not last_diem_match: return None
+        start_diem_id, end_diem_id = first_diem_match.group(1), last_diem_match.group(1)
+        diem_range_str = start_diem_id if start_diem_id == end_diem_id else f"{start_diem_id}-{end_diem_id}"
+        combined_diem_content = "\n\n".join(["\n".join(block).strip() for block in group_of_diem_blocks])
+        final_content = (f"{khoan_intro_text}\n{combined_diem_content}").strip()
+        path = f"{base_path} > Khoản {khoan_id} > Điểm {diem_range_str}"
+        return {'path': path, 'content': final_content, 'content_length_no_spaces': len(re.sub(r'\s', '', final_content)), 'source_article': article_number, 'source_khoan': khoan_id, 'source_diem': diem_range_str}
+    def _clean_content(self, content: str) -> str: 
+        return re.sub(r'\r\n|\r', '\n', content)
+    
+    def get_all_units(self, parsed_data: Dict) -> List[Dict]:
+        """Lấy tất cả units từ parsed structure"""
+        all_units = []
+        
+        if 'articles' not in parsed_data:
+            return all_units
+            
+        for article in parsed_data['articles']:
+            if 'units' in article:
+                for unit in article['units']:
+                    # Convert unit format for data generator
+                    converted_unit = {
+                        'path': unit.get('path', ''),
+                        'content': unit.get('content', ''),
+                        'content_length': unit.get('content_length_no_spaces', 0),
+                        'source_article': unit.get('source_article', ''),
+                        'source_khoan': unit.get('source_khoan', 'N/A'),
+                        'source_diem': unit.get('source_diem', 'N/A')
                     }
-                })
-            
-            # Articles trong sections của chapter
-            for section in chapter.get('sections', []):
-                section_path = f"{chapter_path}/Mục {section['number']}"
-                
-                for article in section.get('articles', []):
-                    articles.append({
-                        'number': article['number'],
-                        'title': article['title'],
-                        'content': article['content'],
-                        'content_length': article['content_length'],
-                        'path': f"{section_path}/Điều {article['number']}",
-                        'location': {
-                            'chapter': chapter['number'],
-                            'section': section['number']
-                        },
-                        'metadata': {
-                            'line_number': article['line_number'],
-                            'paragraph_count': article.get('paragraph_count', 0)
-                        }
-                    })
+                    all_units.append(converted_unit)
         
-        # Independent sections
-        for section in document.get('independent_sections', []):
-            section_path = f"Mục {section['number']}"
-            
-            for article in section.get('articles', []):
-                articles.append({
-                    'number': article['number'],
-                    'title': article['title'],
-                    'content': article['content'],
-                    'content_length': article['content_length'],
-                    'path': f"{section_path}/Điều {article['number']}",
-                    'location': {
-                        'chapter': None,
-                        'section': section['number']
-                    },
-                    'metadata': {
-                        'line_number': article['line_number'],
-                        'paragraph_count': article.get('paragraph_count', 0)
-                    }
-                })
-        
-        # Independent articles
-        for article in document.get('independent_articles', []):
-            articles.append({
-                'number': article['number'],
-                'title': article['title'],
-                'content': article['content'],
-                'content_length': article['content_length'],
-                'path': f"Điều {article['number']}",
-                'location': {
-                    'chapter': None,
-                    'section': None
-                },
-                'metadata': {
-                    'line_number': article['line_number'],
-                    'paragraph_count': article.get('paragraph_count', 0)
-                }
-            })
-        
-        return articles
+        return all_units
+
+

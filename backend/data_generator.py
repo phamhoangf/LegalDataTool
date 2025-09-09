@@ -10,8 +10,14 @@ from pydantic import BaseModel
 from similarity_checker import QuestionSimilarityChecker
 from document_parsers import LegalDocumentParser
 
-# HuggingFace imports - simplified to use HTTP requests
-import requests
+# HuggingFace imports
+try:
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    import torch
+    HF_AVAILABLE = True
+except ImportError:
+    HF_AVAILABLE = False
+    print("⚠️ HuggingFace transformers not available. Install with: pip install transformers torch")
 
 class SourceReference(BaseModel):
     """Tham chiếu đến nguồn của thông tin"""
@@ -47,17 +53,34 @@ class DataGenerator:
         self.similarity_checker = QuestionSimilarityChecker(similarity_threshold=similarity_threshold)
         print(f"🔍 Initialized similarity checker with threshold {similarity_threshold}")
         
-        # HuggingFace server URL - cấu hình URL server ngrok
-        self.hf_server_url = "https://evidently-cheerful-griffon.ngrok-free.app/generate"
+        # HuggingFace model setup
+        self.hf_model = None
+        self.hf_tokenizer = None
         
         # Rate limiting for Gemini API (15 req/min = 4 seconds per request)
         self.last_api_call = 0
         self.min_interval = 4.0  # seconds between API calls
     
-    def set_huggingface_server_url(self, url: str):
-        """Cấu hình URL server HuggingFace"""
-        self.hf_server_url = url
-        print(f"🔗 HuggingFace server URL updated: {url}")
+    def init_huggingface_model(self, model_name: str = "phamhoangf/qwen3-4b-generate-data"):
+        """Initialize HuggingFace model"""
+        if not HF_AVAILABLE:
+            raise ImportError("HuggingFace transformers not available")
+        
+        try:
+            print(f"🤖 Loading HuggingFace model: {model_name}")
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            
+            self.hf_tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.hf_model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                device_map="auto" if device == "cuda" else None
+            )
+            print(f"✅ HuggingFace model loaded on {device}")
+            
+        except Exception as e:
+            print(f"❌ Failed to load HuggingFace model: {str(e)}")
+            raise
     
     def generate_qa_with_gemini(self, prompt: str, temperature: float = 0.7) -> LegalQAList:
         """Sinh QA bằng Gemini API với rate limiting"""
@@ -87,31 +110,35 @@ class DataGenerator:
         return response.parsed
     
     def generate_qa_with_huggingface(self, prompt: str, temperature: float = 0.7) -> LegalQAList:
-        """Sinh QA bằng HuggingFace model qua HTTP API"""
+        """Sinh QA bằng HuggingFace model"""
+        if not self.hf_model:
+            raise ValueError("HuggingFace model not initialized. Call init_huggingface_model() first")
+        
+        # Format prompt cho model
+        formatted_prompt = f"<|system|>Bạn là trợ lý AI chuyên về pháp luật Việt Nam. Hãy tạo câu hỏi và câu trả lời từ văn bản pháp luật.<|end|>\n<|user|>{prompt}<|end|>\n<|assistant|>"
+        
+        inputs = self.hf_tokenizer.encode(formatted_prompt, return_tensors="pt")
+        if self.hf_model.device.type == "cuda":
+            inputs = inputs.to("cuda")
+        
+        with torch.no_grad():
+            outputs = self.hf_model.generate(
+                inputs,
+                max_new_tokens=2048,
+                temperature=temperature,
+                do_sample=True,
+                top_p=0.9,
+                pad_token_id=self.hf_tokenizer.eos_token_id
+            )
+        
+        response_text = self.hf_tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
+        
+        # Parse JSON response
         try:
-            # Tạo payload như trong test_ngrok.py
-            messages = [{"role": "user", "content": prompt}]
-            payload = {"messages": messages}
-            
-            # Gửi request đến server
-            response = requests.post(self.hf_server_url, json=payload, timeout=60)
-            response.raise_for_status()
-            
-            # Lấy kết quả
-            result = response.json()
-            response_text = result.get('response', '')
-            
-            # Parse JSON response
-            try:
-                response_json = json.loads(response_text)
-                return LegalQAList(**response_json)
-            except json.JSONDecodeError:
-                # Fallback - tạo single QA nếu không parse được
-                return LegalQAList(qa_pairs=[LegalQA(question="Sample question", answer="Sample answer")])
-                
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Lỗi khi gọi HuggingFace server: {e}")
-            # Return fallback data
+            response_json = json.loads(response_text)
+            return LegalQAList(**response_json)
+        except json.JSONDecodeError:
+            # Fallback - tạo single QA nếu không parse được
             return LegalQAList(qa_pairs=[LegalQA(question="Sample question", answer="Sample answer")])
     
     def generate_qa(self, prompt: str, llm_type: str = "gemini", temperature: float = 0.7) -> LegalQAList:
@@ -167,131 +194,136 @@ class DataGenerator:
         
         return filtered_samples
 
-    def get_articles_from_parsed_structure(self, document) -> List[Dict]:
-        """Lấy articles từ parsed structure hoặc fallback"""
-        # Kiểm tra parsed structure
-        if hasattr(document, 'parsed_structure') and document.parsed_structure:
-            try:
-                parsed_data = json.loads(document.parsed_structure)
-                parser = LegalDocumentParser()
-                articles = parser.get_all_articles(parsed_data)
-                
-                # Convert to format cho data generator
-                units = []
-                for article in articles:
-                    units.append({
-                        "id": f"article_{article['number']}",
-                        "title": f"Điều {article['number']}. {article['title']}",
-                        "content": article['content'],
-                        "document_title": document.title,
-                        "metadata": {
-                            "article_number": article['number'],
-                            "source_document": document.title,
-                            "unit_type": "article",
-                            "length": article['content_length']
-                        }
-                    })
-                
-                print(f"✅ Using parsed structure: {len(units)} articles from {document.title}")
-                return units
-                
-            except Exception as e:
-                print(f"⚠️ Failed to use parsed structure: {str(e)}, fallback to simple parsing")
-        
-        # Fallback - simple article extraction
-        return self.split_law_by_article(document.content, document.title)
-
-    def split_law_by_article(self, text: str, document_title: str = "") -> List[Dict]:
-        """Tách văn bản luật thành các điều"""
-        units = []
-        split_pattern = r'(?m)(?=^\s*Điều \d+\.)'
-        chunks = re.split(split_pattern, text.strip())
-        
-        for chunk in chunks:
-            chunk = chunk.strip()
-            lines = chunk.split('\n')
-            dieu_line = None
-            for line in lines:
-                if re.match(r'^\s*Điều \d+\.', line):
-                    dieu_line = line.strip()
-                    break
+    def get_units_from_parsed_structure(self, document) -> List[Dict]:
+        """Lấy units từ document sử dụng LegalDocumentParser"""
+        try:
+            # Sử dụng parser để lấy units trực tiếp
+            parser = LegalDocumentParser()
             
-            if dieu_line:
-                match = re.search(r'Điều (\d+)', dieu_line)
-                if match:
-                    article_number = match.group(1)
-                    units.append({
-                        "id": f"article_{article_number}",
-                        "title": dieu_line,
-                        "content": chunk,
-                        "document_title": document_title,
-                        "metadata": {
-                            "article_number": article_number,
-                            "source_document": document_title,
-                            "unit_type": "article",
-                            "length": len(chunk)
-                        }
-                    })
-                
-        return units
+            # Nếu có parsed structure thì sử dụng
+            if hasattr(document, 'parsed_structure') and document.parsed_structure:
+                try:
+                    parsed_data = json.loads(document.parsed_structure)
+                    print(f"🔍 Using existing parsed structure for {document.title}")
+                    print(f"   Articles found: {len(parsed_data.get('articles', []))}")
+                    units = parser.get_all_units(parsed_data)
+                    print(f"   Units extracted: {len(units)}")
+                except Exception as e:
+                    print(f"⚠️ Failed to use parsed structure: {str(e)}, re-parsing...")
+                    # Fallback: parse lại từ content
+                    parsed_data = parser.parse_document(document.title, document.content)
+                    print(f"   Re-parsed articles: {len(parsed_data.get('articles', []))}")
+                    units = parser.get_all_units(parsed_data)
+                    print(f"   Units from re-parse: {len(units)}")
+            else:
+                # Parse từ đầu nếu chưa có parsed structure
+                print(f"🔄 Parsing document from scratch: {document.title}")
+                parsed_data = parser.parse_document(document.title, document.content)
+                print(f"   Articles parsed: {len(parsed_data.get('articles', []))}")
+                units = parser.get_all_units(parsed_data)
+                print(f"   Units generated: {len(units)}")
+            
+            # Convert to format cho data generator
+            converted_units = []
+            for unit in units:
+                converted_units.append({
+                    "id": f"unit_{unit['source_article']}_{unit['source_khoan']}_{unit['source_diem']}",
+                    "title": unit['path'].split(' > ')[-1] if ' > ' in unit['path'] else f"Unit {unit['source_article']}",
+                    "content": unit['content'],
+                    "document_title": document.title,
+                    "path": unit['path'],
+                    "metadata": {
+                        "source_article": unit['source_article'],
+                        "source_khoan": unit['source_khoan'], 
+                        "source_diem": unit['source_diem'],
+                        "source_document": document.title,
+                        "unit_type": "content_unit",
+                        "length": unit.get('content_length', len(unit['content']))
+                    }
+                })
+            
+            print(f"✅ Extracted {len(converted_units)} units from {document.title}")
+            return converted_units
+            
+        except Exception as e:
+            print(f"❌ Failed to extract units from {document.title}: {str(e)}")
+            return []
 
-    def monte_carlo_sample_articles(self, all_articles: List[Dict], sample_size: int) -> List[Dict]:
-        """Monte Carlo sampling đơn giản với weights dựa trên content length và position"""
+    def monte_carlo_sample_articles(self, all_articles: List[Dict], sample_size: int, iteration: int = 0) -> List[Dict]:
+        """Monte Carlo sampling với độ ngẫu nhiên cao hơn"""
         if not all_articles or sample_size <= 0:
             return []
             
         if sample_size >= len(all_articles):
             articles_copy = all_articles.copy()
+            # Thêm iteration seed để mỗi lần gọi khác nhau
+            random.seed(hash(f"shuffle_{iteration}_{time.time()}") % 100000)
             random.shuffle(articles_copy)
+            random.seed()  # Reset seed
             return articles_copy
         
-        # Tính weights đơn giản
+        # Tạo random seed khác nhau cho mỗi iteration
+        random.seed(hash(f"sampling_{iteration}_{time.time()}_{random.randint(1, 10000)}") % 100000)
+        
+        # Tính weights với nhiều yếu tố ngẫu nhiên hơn
         weights = []
-        for article in all_articles:
-            # Base weight từ content length
+        for i, article in enumerate(all_articles):
+            # Base weight từ content length với random factor lớn hơn
             content_length = article.get('metadata', {}).get('length', len(article.get('content', '')))
             length_weight = min(content_length / 800, 2.0)
             
-            # Position weight (strategic articles)
-            article_num = article.get('metadata', {}).get('article_number')
-            position_weight = 1.0
-            if article_num:
-                try:
-                    num = int(article_num)
-                    if num <= 5 or num % 20 == 0:
-                        position_weight = 1.5
-                    elif num <= 20:
-                        position_weight = 1.2
-                except:
-                    pass
+            # Position weight với thêm random
+            position_weight = random.uniform(0.8, 1.5)  # Hoàn toàn random thay vì dựa vào article number
             
-            # Random factor cho diversity
-            random_factor = random.uniform(0.7, 1.3)
-            final_weight = length_weight * position_weight * random_factor
+            # Iteration-based randomness để đảm bảo mỗi lần khác nhau
+            iteration_factor = random.uniform(0.5, 2.0) * (1 + 0.1 * (iteration % 10))
+            
+            # Index-based diversity để tránh bias vị trí
+            index_factor = random.uniform(0.7, 1.3) * (1 + 0.05 * (i % 7))
+            
+            # Time-based randomness
+            time_factor = random.uniform(0.8, 1.2) * (1 + 0.001 * (int(time.time()) % 1000))
+            
+            # Kết hợp tất cả factors
+            final_weight = length_weight * position_weight * iteration_factor * index_factor * time_factor
             weights.append(max(final_weight, 0.1))
         
-        # Monte Carlo sampling
+        # Thêm noise vào weights để tăng entropy
+        for i in range(len(weights)):
+            noise = random.uniform(0.9, 1.1)
+            weights[i] *= noise
+        
+        # Monte Carlo sampling với multiple rounds để tăng randomness
         selected = []
         available_indices = list(range(len(all_articles)))
         available_weights = weights.copy()
         
-        for _ in range(sample_size):
+        for round_idx in range(sample_size):
             if not available_indices:
                 break
             
-            total_weight = sum(available_weights)
+            # Thêm round-based randomness
+            round_factor = random.uniform(0.9, 1.1)
+            adjusted_weights = [w * round_factor * random.uniform(0.95, 1.05) for w in available_weights]
+            
+            total_weight = sum(adjusted_weights)
             if total_weight == 0:
                 chosen_idx = random.randint(0, len(available_indices) - 1)
             else:
-                rand_val = random.uniform(0, total_weight)
-                cumsum = 0
-                chosen_idx = len(available_weights) - 1
+                # Multiple random attempts để tăng entropy
+                best_choice = None
+                for attempt in range(3):  # Thử 3 lần, chọn lần cuối
+                    rand_val = random.uniform(0, total_weight)
+                    cumsum = 0
+                    for i, weight in enumerate(adjusted_weights):
+                        cumsum += weight
+                        if rand_val <= cumsum:
+                            best_choice = i
+                            break
+                    if best_choice is None:
+                        best_choice = len(adjusted_weights) - 1
                 
-                for i, weight in enumerate(available_weights):
-                    cumsum += weight
-                    if rand_val <= cumsum:
-                        chosen_idx = i
-                        break
+                chosen_idx = best_choice if best_choice is not None else random.randint(0, len(available_indices) - 1)
             
             # Add selected article
             selected.append(all_articles[available_indices[chosen_idx]])
@@ -300,8 +332,12 @@ class DataGenerator:
             available_indices.pop(chosen_idx)
             available_weights.pop(chosen_idx)
         
+        # Final shuffle với iteration seed
+        random.seed(hash(f"final_{iteration}_{len(selected)}_{time.time()}") % 100000)
         random.shuffle(selected)
-        print(f"🎲 Monte Carlo sampling: chọn {len(selected)}/{len(all_articles)} articles")
+        random.seed()  # Reset seed
+        
+        print(f"🎲 Monte Carlo sampling (iteration {iteration}): chọn {len(selected)}/{len(all_articles)} articles với high entropy")
         return selected
 
     def generate_from_multiple_documents(self, documents, topic_name, data_type, num_samples, llm_type="gemini"):
@@ -311,22 +347,22 @@ class DataGenerator:
 
         print(f"🔍 Phân tích {len(documents)} documents...")
 
-        # Lấy articles từ parsed structure
-        all_articles = []
+        # Lấy units từ parsed structure
+        all_units = []
         for doc in documents:
-            articles = self.get_articles_from_parsed_structure(doc)
-            all_articles.extend(articles)
-            print(f"  📋 {doc.title}: {len(articles)} điều")
+            units = self.get_units_from_parsed_structure(doc)
+            all_units.extend(units)
+            print(f"  📋 {doc.title}: {len(units)} units")
 
-        print(f"📊 Tổng cộng: {len(all_articles)} điều từ {len(documents)} tài liệu")
+        print(f"📊 Tổng cộng: {len(all_units)} units từ {len(documents)} tài liệu")
 
         # Monte Carlo sampling
-        max_articles = min(len(all_articles), max(num_samples // 2, 10))
-        selected_articles = self.monte_carlo_sample_articles(all_articles, max_articles)
-        print(f"  🎯 Đã chọn {len(selected_articles)} articles")
+        max_units = min(len(all_units), max(num_samples // 2, 10))
+        selected_units = self.monte_carlo_sample_articles(all_units, max_units)
+        print(f"  🎯 Đã chọn {len(selected_units)} units")
 
         # Sinh dữ liệu
-        all_samples = self.generate_samples_from_articles(selected_articles, topic_name, data_type, num_samples, llm_type)
+        all_samples = self.generate_samples_from_units(selected_units, topic_name, data_type, num_samples, llm_type)
 
         # Lọc trùng lặp
         print(f"🔍 Kiểm tra tương đồng cho {len(all_samples)} samples...")
@@ -335,21 +371,21 @@ class DataGenerator:
         print(f"✅ Hoàn thành: {len(filtered_samples)} samples (đã lọc {len(all_samples) - len(filtered_samples)} trùng lặp)")
         return filtered_samples[:num_samples]
 
-    def generate_samples_from_articles(self, articles, topic, data_type, num_samples, llm_type="gemini"):
+    def generate_samples_from_units(self, units, topic, data_type, num_samples, llm_type="gemini"):
         """Sinh dữ liệu đơn giản với sources chung cho tất cả câu hỏi"""
-        if not articles:
+        if not units:
             return []
         
         # Xác định số sources theo yêu cầu
         num_sources_map = {
-            'word_matching': min(1, len(articles)),
-            'concept_understanding': min(1, len(articles)),
-            'multi_paragraph_reading': min(2, len(articles)),
-            'multi_hop_reasoning': min(3, len(articles))
+            'word_matching': min(1, len(units)),
+            'concept_understanding': min(1, len(units)),
+            'multi_paragraph_reading': min(2, len(units)),
+            'multi_hop_reasoning': min(3, len(units))
         }
-        num_sources = num_sources_map.get(data_type, min(3, len(articles)))
+        num_sources = num_sources_map.get(data_type, min(3, len(units)))
         
-        # Tạo câu hỏi - mỗi iteration tự Monte Carlo chọn articles
+        # Tạo câu hỏi - mỗi iteration tự Monte Carlo chọn units
         all_samples = []
         
         # Rate limiting info
@@ -361,26 +397,26 @@ class DataGenerator:
             print(f"🔄 Generating sample {i+1}/{num_samples}...")
             
             # Monte Carlo sampling cho iteration này
-            selected_articles = self.monte_carlo_sample_articles(articles, num_sources)
+            selected_units = self.monte_carlo_sample_articles(units, num_sources, iteration=i)
             
             # Tạo sources và content cho iteration này
             iteration_sources = []
             combined_content = []
             
-            for article in selected_articles:
+            for unit in selected_units:
                 source_ref = SourceReference(
-                    article_number=str(article['metadata']['article_number']) if article['metadata']['article_number'] else "unknown",
-                    article_title=article['title'],
-                    document_title=article['document_title']
+                    article_number=str(unit['metadata']['source_article']) if unit['metadata']['source_article'] else "unknown",
+                    article_title=unit['title'],
+                    document_title=unit['document_title']
                 )
                 iteration_sources.append(source_ref)
-                article_path = article.get('path', article['title'])
-                combined_content.append(f"--- {article['title']} ({article_path}) ---\n{article['content']}")
+                unit_path = unit.get('path', unit['title'])
+                combined_content.append(f"--- {unit['title']} ({unit_path}) ---\n{unit['content']}")
 
             combined_text = "\n\n".join(combined_content)
             
             # Rule-based difficulty cho iteration này
-            difficulty = self.get_rule_based_difficulty(data_type, len(selected_articles))
+            difficulty = self.get_rule_based_difficulty(data_type, len(selected_units))
             
             # Tạo prompt cho iteration này
             prompt = self.create_diverse_prompt(combined_text, topic, data_type, difficulty, i)
@@ -406,7 +442,7 @@ class DataGenerator:
                         ],
                         'metadata': {
                             'generation_method': 'per_iteration_monte_carlo',
-                            'num_sources': len(selected_articles),
+                            'num_sources': len(selected_units),
                             'temperature': temperature,
                             'llm_type': llm_type
                         }
@@ -493,15 +529,6 @@ class DataGenerator:
     Answer: "Dựa trên điều luật trên, độ tuổi là 18 tuổi."
 
     Trả về output dưới dạng JSON với qa_pairs.
-    **ĐỊNH DẠNG OUTPUT MẪU:**
-    {
-    "qa_pairs": [
-        {
-        "question": "<Nội dung câu hỏi được tạo ra từ văn bản>",
-        "answer": "<Nội dung câu trả lời đầy đủ, diễn giải từ văn bản>"
-        }
-    ]
-    }
     """
 
     def create_concept_understanding_prompt(self, content, topic, starter, focus, difficulty):
@@ -531,6 +558,18 @@ class DataGenerator:
     Answer: "Việc kiểm định định kỳ phương tiện giao thông là bắt buộc nhằm đảm bảo an toàn giao thông, kiểm tra tình trạng kỹ thuật của xe, phát hiện sớm các hư hỏng có thể gây tai nạn, đồng thời kiểm soát khí thải bảo vệ môi trường."
 
     Trả về output dưới dạng JSON với qa_pairs.
+    ĐỊNH DẠNG OUTPUT BẮT BUỘC:
+    Trả về duy nhất một khối mã JSON hợp lệ. Không thêm bất kỳ lời giải thích hay văn bản nào khác bên ngoài khối JSON.
+
+    ```json
+    {{
+    "qa_pairs": [
+        {{
+        "question": "Nội dung câu hỏi được tạo ra ở đây, bắt đầu bằng '{starter}' và tập trung vào chủ đề '{focus}'.",
+        "answer": "Nội dung câu trả lời chi tiết, giải thích rõ ràng khái niệm, nguyên tắc và có thể kèm theo ví dụ cụ thể để minh họa."
+        }}
+    ]
+    }}
         """
 
     def create_multi_paragraph_prompt(self, content, topic, starter, focus, difficulty):
@@ -541,24 +580,26 @@ class DataGenerator:
     {content}
 
     Hãy tạo 1 câu hỏi loại MULTI-PARAGRAPH READING (độ khó {difficulty}) tập trung vào {focus}.
-
+    
     ĐẶC ĐIỂM CÂU HỎI MULTI-PARAGRAPH READING:
     - Yêu cầu tổng hợp thông tin từ nhiều quy định khác nhau
     - So sánh, đối chiếu các điều khoản
     - Tìm mối liên hệ giữa các quy định
     - Câu trả lời cần kết hợp thông tin từ nhiều nguồn
-
+    
     YÊU CẦU QUAN TRỌNG:
-    1. Câu hỏi và đáp án phải HOÀN TOÀN ĐỘC LẬP - có thể hiểu được mà không cần context bên ngoài
-    2. TUYỆT ĐỐI KHÔNG dùng "dựa trên điều luật trên", "theo các quy định trên", "căn cứ vào điều trên"
-    3. Không cần thiết phải trích dẫn, NẾU cần trích dẫn: phải ghi ĐẦY ĐỦ tên văn bản (ví dụ: "Theo Luật Giao thông đường bộ 2008, Điều 25") hoặc nội dung phần văn bản cần trích dẫn
-    4. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..."
-    5. Đáp án phải tổng hợp, so sánh rõ ràng các quy định khác nhau
-
+    1. CÂU HỎI PHẢI CÓ ĐỘ BAO PHỦ RỘNG: Cố gắng thiết kế câu hỏi sao cho người trả lời BẮT BUỘC phải đọc và tổng hợp thông tin từ TẤT CẢ các đoạn trích đã cho để có thể trả lời đầy đủ.
+    2. CÂU HỎI NÊN BẮT ĐẦU TỪ MỘT TÌNH HUỐNG THỰC TẾ: Hãy tưởng tượng một kịch bản cụ thể mà một chủ thể có thể gặp phải, sau đó đặt câu hỏi pháp lý liên quan đến kịch bản đó.
+    3. Câu hỏi và đáp án phải HOÀN TOÀN ĐỘC LẬP - có thể hiểu được mà không cần context bên ngoài
+    4. TUYỆT ĐỐI KHÔNG dùng "dựa trên điều luật trên", "theo các quy định trên", "căn cứ vào điều trên"
+    5. NẾU cần trích dẫn: phải ghi ĐẦY ĐỦ tên văn bản cụ thể cho từng điều
+    6. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..."
+    7. Đáp án phải tổng hợp, so sánh rõ ràng các quy định khác nhau
+    
     VÍ DỤ TỐT:
-    Question: "Có những hình thức xử phạt nào đối với vi phạm giao thông?"
-    Answer: "Có 4 hình thức xử phạt chính: phạt cảnh cáo đối với vi phạm nhẹ lần đầu, phạt tiền từ 100.000 đến 40 triệu đồng tùy mức độ vi phạm, tước quyền sử dụng bằng lái xe từ 1-24 tháng đối với vi phạm nghiêm trọng, và tịch thu phương tiện đối với các trường hợp vi phạm đặc biệt nghiêm trọng."
-
+    Question: "Nếu một người vừa muốn đăng ký kinh doanh hộ cá thể, vừa muốn mở một doanh nghiệp tư nhân khác, quy định pháp luật về các trường hợp này có điểm gì giống và khác nhau về quyền và nghĩa vụ?"
+    Answer: "Điểm giống nhau là cả hai đều do một cá nhân làm chủ và chịu trách nhiệm vô hạn. Tuy nhiên, điểm khác biệt lớn là theo quy định, một cá nhân chỉ được thành lập một doanh nghiệp tư nhân, nhưng có thể đồng thời là chủ hộ kinh doanh. Do đó, người này có thể tiếp tục đăng ký hộ kinh doanh nhưng không thể mở thêm doanh nghiệp tư nhân thứ hai."
+    
     Trả về output dưới dạng JSON với qa_pairs.
         """
 
@@ -570,26 +611,28 @@ class DataGenerator:
     {content}
 
     Hãy tạo 1 câu hỏi loại MULTIHOP (độ khó {difficulty}) tập trung vào {focus}.
-
+    
     ĐẶC ĐIỂM CÂU HỎI MULTIHOP:
     - Yêu cầu suy luận logic qua nhiều bước
-    - Kết hợp thông tin từ nhiều quy định để đưa ra kết luận
+    - Kết hợp nhiều quy định để đưa ra kết luận
     - Áp dụng quy tắc vào tình huống phức tạp, thực tế
     - Câu trả lời cần chuỗi suy luận có logic rõ ràng
-
+    
     YÊU CẦU QUAN TRỌNG:
-    1. Câu hỏi và đáp án phải HOÀN TOÀN ĐỘC LẬP - có thể hiểu được mà không cần context bên ngoài
-    2. TUYỆT ĐỐI KHÔNG dùng "dựa trên điều luật trên", "theo các quy định trên", "căn cứ vào điều trên"
-    3. Không cần thiết phải trích dẫn, NẾU cần trích dẫn: phải ghi ĐẦY ĐỦ tên văn bản (ví dụ: "Theo Luật Giao thông đường bộ 2008, Điều 25") hoặc nội dung phần văn bản cần trích dẫn
-    4. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..."
-    5. Đáp án cần có chuỗi suy luận từng bước: tình huống → quy định áp dụng → kết luận
-
+    1. CÂU HỎI PHẢI CÓ ĐỘ BAO PHỦ RỘNG: Cố gắng thiết kế câu hỏi sao cho người trả lời BẮT BUỘC phải đọc và tổng hợp thông tin từ TẤT CẢ các đoạn trích đã cho để có thể trả lời đầy đủ.
+    2. CÂU HỎI NÊN BẮT ĐẦU TỪ MỘT TÌNH HUỐNG THỰC TẾ: Hãy tưởng tượng một kịch bản cụ thể mà một chủ thể có thể gặp phải, sau đó đặt câu hỏi pháp lý liên quan đến kịch bản đó.                                                        
+    3. Câu hỏi và đáp án phải HOÀN TOÀN ĐỘC LẬP - có thể hiểu được mà không cần context bên ngoài
+    4. TUYỆT ĐỐI KHÔNG dùng "dựa trên điều luật trên", "theo các quy định trên", "căn cứ vào điều trên"
+    5. NẾU cần trích dẫn: phải ghi ĐẦY ĐỦ tên văn bản và điều cụ thể
+    6. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..."
+    7. Đáp án cần có chuỗi suy luận từng bước: tình huống → quy định áp dụng → kết luận
+    
     VÍ DỤ TỐT:
     Question: "Một tài xế lái xe tải chở hàng quá tải 50% và không có bằng lái phù hợp sẽ bị xử lý như thế nào?"
     Answer: "Tài xế này sẽ bị xử phạt kép: đầu tiên bị phạt tiền 12-15 triệu đồng và tước bằng lái 2-4 tháng do chở quá tải theo Nghị định 100/2019, đồng thời bị phạt 16-18 triệu và tước bằng lái 10-12 tháng do không có bằng lái phù hợp. Tổng cộng có thể bị phạt đến 33 triệu đồng và tước bằng lái tối đa 16 tháng."
-
+    
     VÍ DỤ XẤU (TRÁNH):
     Answer: "Căn cứ vào các điều luật trên, tài xế sẽ bị xử phạt..."
-
+    
     Trả về output dưới dạng JSON với qa_pairs.
         """

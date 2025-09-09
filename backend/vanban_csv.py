@@ -11,6 +11,7 @@ class VanBanCSVReader:
         self.csv_file_path = csv_file_path
         self.total_rows = 0
         self.parser = LegalDocumentParser()
+        self.ALL_QUOTES = ['“', '”', '"']
         self._init_csv_info()
     
     def _init_csv_info(self):
@@ -113,12 +114,44 @@ class VanBanCSVReader:
             return None
     
     def _count_articles(self, content: str) -> int:
-        """Đếm số điều trong văn bản sử dụng regex pattern của LegalDocumentParser"""
+        """Đếm số điều trong văn bản sử dụng document parser"""
         try:
-            # Sử dụng pattern từ parser
-            pattern = self.parser.patterns['dieu']  # r'Điều\s+(\d+)\.?\s*([^\n\r]*)'
-            matches = re.findall(pattern, content)
-            return len(matches)
+
+            content = self.parser._clean_content(content)
+            content = self.parser._normalize_multiline_headers(content)
+
+            lines = content.split('\n')
+            # 2. Khởi tạo các biến trạng thái tối giản
+            article_count = 0
+            last_article_num = 0
+            in_quote = False # Cờ để theo dõi trạng thái đang trong trích dẫn hay không
+
+            # 3. Duyệt qua từng dòng với logic gọn nhẹ
+            for line in lines:
+                # Cập nhật trạng thái 'in_quote' cho dòng tiếp theo
+                # Logic này giúp bỏ qua các header "Điều X" nằm bên trong một câu trích dẫn
+                quote_char_count = sum(line.count(q) for q in self.ALL_QUOTES)
+                if quote_char_count % 2 != 0:
+                    in_quote = not in_quote
+
+                # Nếu dòng hiện tại nằm trong một trích dẫn, bỏ qua không xử lý
+                if in_quote:
+                    continue
+
+                # Kiểm tra xem dòng có phải là một header "Điều" hay không
+                dieu_match = re.match(self.parser.patterns['dieu_header'], line)
+                # dieu_match = self.parser.patterns['dieu_header'].match(line)
+                
+                if dieu_match:
+                    current_article_num = int(dieu_match.group(1))
+                    
+                    # >> LOGIC CỐT LÕI: Chỉ đếm nếu số Điều là tuần tự (N+1) <<
+                    # Điều này giúp loại bỏ các tham chiếu sai ("... theo quy định tại Điều 15 ...")
+                    if current_article_num == last_article_num + 1:
+                        article_count += 1
+                        last_article_num = current_article_num
+            
+            return article_count
         except Exception as e:
             print(f"Error counting articles: {e}")
             return 0

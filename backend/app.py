@@ -103,7 +103,6 @@ def update_topic(topic_id):
     
     topic.name = data.get('name', topic.name)
     topic.description = data.get('description', topic.description)
-    topic.legal_text = data.get('legal_text', topic.legal_text)
     
     db.session.commit()
     
@@ -111,7 +110,7 @@ def update_topic(topic_id):
         'id': topic.id,
         'name': topic.name,
         'description': topic.description,
-        'legal_text': topic.legal_text,
+        'created_at': topic.created_at.isoformat(),
         'message': 'Chủ đề đã được cập nhật thành công'
     })
 
@@ -530,6 +529,115 @@ def upload_document_file():
         'file_type': result.get('file_type'),
         'metadata': result.get('metadata', {})
     }), 201
+
+@app.route('/api/documents/reparse', methods=['POST'])
+def reparse_all_documents():
+    """Re-parse tất cả tài liệu hiện có với logic parser mới"""
+    try:
+        documents = LegalDocument.query.all()
+        updated_count = 0
+        failed_count = 0
+        
+        print(f"🔄 Bắt đầu re-parse {len(documents)} tài liệu...")
+        
+        for doc in documents:
+            try:
+                print(f"🔄 Re-parsing: {doc.title}")
+                
+                # Parse lại với logic mới
+                structure = legal_parser.parse_document(doc.title, doc.content)
+                doc.parsed_structure = json.dumps(structure, ensure_ascii=False)
+                
+                # Cập nhật articles_count
+                doc.articles_count = len(structure.get('articles', []))
+                
+                # Cập nhật thời gian
+                doc.updated_at = datetime.utcnow()
+                
+                updated_count += 1
+                print(f"✅ Re-parsed successfully: {doc.title} ({doc.articles_count} articles)")
+                
+            except Exception as e:
+                print(f"❌ Failed to re-parse {doc.title}: {str(e)}")
+                failed_count += 1
+                continue
+        
+        # Commit tất cả thay đổi
+        db.session.commit()
+        
+        print(f"🎉 Re-parse completed: {updated_count} success, {failed_count} failed")
+        
+        return jsonify({
+            'message': f'Re-parse hoàn thành',
+            'total_documents': len(documents),
+            'updated_count': updated_count,
+            'failed_count': failed_count,
+            'success_rate': f"{(updated_count / len(documents) * 100):.1f}%" if documents else "0%"
+        })
+        
+    except Exception as e:
+        print(f"❌ Re-parse failed: {str(e)}")
+        return jsonify({'error': f'Lỗi khi re-parse tài liệu: {str(e)}'}), 500
+
+@app.route('/api/topics/<int:topic_id>/documents/reparse', methods=['POST'])
+def reparse_topic_documents(topic_id):
+    """Re-parse tất cả tài liệu của một topic cụ thể"""
+    try:
+        # Kiểm tra topic tồn tại
+        topic = LegalTopic.query.get_or_404(topic_id)
+        
+        # Lấy tất cả documents của topic
+        documents = db.session.query(LegalDocument).join(TopicDocument).filter(
+            TopicDocument.topic_id == topic_id
+        ).all()
+        
+        if not documents:
+            return jsonify({'message': f'Topic "{topic.name}" chưa có tài liệu nào'}), 200
+        
+        updated_count = 0
+        failed_count = 0
+        
+        print(f"🔄 Bắt đầu re-parse {len(documents)} tài liệu của topic '{topic.name}'...")
+        
+        for doc in documents:
+            try:
+                print(f"🔄 Re-parsing: {doc.title}")
+                
+                # Parse lại với logic mới
+                structure = legal_parser.parse_document(doc.title, doc.content)
+                doc.parsed_structure = json.dumps(structure, ensure_ascii=False)
+                
+                # Cập nhật articles_count
+                doc.articles_count = len(structure.get('articles', []))
+                
+                # Cập nhật thời gian
+                doc.updated_at = datetime.utcnow()
+                
+                updated_count += 1
+                print(f"✅ Re-parsed successfully: {doc.title} ({doc.articles_count} articles)")
+                
+            except Exception as e:
+                print(f"❌ Failed to re-parse {doc.title}: {str(e)}")
+                failed_count += 1
+                continue
+        
+        # Commit tất cả thay đổi
+        db.session.commit()
+        
+        print(f"🎉 Topic re-parse completed: {updated_count} success, {failed_count} failed")
+        
+        return jsonify({
+            'message': f'Re-parse topic "{topic.name}" hoàn thành',
+            'topic_name': topic.name,
+            'total_documents': len(documents),
+            'updated_count': updated_count,
+            'failed_count': failed_count,
+            'success_rate': f"{(updated_count / len(documents) * 100):.1f}%" if documents else "0%"
+        })
+        
+    except Exception as e:
+        print(f"❌ Topic re-parse failed: {str(e)}")
+        return jsonify({'error': f'Lỗi khi re-parse tài liệu topic: {str(e)}'}), 500
 
 @app.route('/api/upload', methods=['POST'])
 def upload_legal_document():
