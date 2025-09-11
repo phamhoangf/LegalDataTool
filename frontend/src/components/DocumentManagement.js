@@ -176,7 +176,7 @@ const DocumentManagement = () => {
   const uploadProps = {
     name: 'file',
     multiple: false,
-    accept: '.txt,.pdf,.doc,.docx',
+    accept: '.txt,.pdf,.docx',
     beforeUpload: (file) => {
       handleUploadDocument(file);
       return false; // Prevent default upload

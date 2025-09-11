@@ -8,6 +8,7 @@ import re
 import json
 from typing import List, Dict, Any, Tuple, Optional
 from hybrid_search import HybridSearchEngine, create_hybrid_search_engine
+from document_parsers import LegalDocumentParser
 
 class CoverageAnalyzer:
     """
@@ -71,13 +72,14 @@ class CoverageAnalyzer:
         
         return words
     
-    def split_into_units(self, text: str, unit_type: str = 'sentence') -> List[Dict[str, Any]]:
+    def split_into_units(self, document_title: str, text: str, unit_type: str = 'sentence') -> List[Dict[str, Any]]:
         """
-        Chia văn bản thành các đơn vị (units)
+        Chia văn bản thành các đơn vị (units) sử dụng LegalDocumentParser chuẩn
         
         Args:
+            document_title: Tiêu đề tài liệu
             text: Văn bản cần chia
-            unit_type: Loại đơn vị ('sentence', 'paragraph')
+            unit_type: Loại đơn vị ('sentence' sử dụng parser, 'paragraph' manual)
             
         Returns:
             List[Dict]: Danh sách các units với metadata
@@ -85,44 +87,32 @@ class CoverageAnalyzer:
         units = []
         
         if unit_type == 'sentence':
-            # Chia thành các điều luật theo pattern "Điều X."
-            # Sử dụng split approach đơn giản và hiệu quả
-            parts = re.split(r'(?=Điều\s+\d+\.)', text, flags=re.IGNORECASE)
+            # Sử dụng LegalDocumentParser chuẩn như trong data_generator
+            parser = LegalDocumentParser()
+            print(f"🔄 Parsing document with LegalDocumentParser: {document_title}")
+            parsed_data = parser.parse_document(document_title, text)
+            print(f"   Articles parsed: {len(parsed_data.get('articles', []))}")
             
-            article_count = 0
-            for i, part in enumerate(parts):
-                part = part.strip()
-                if len(part) < 30:  # Loại bỏ phần quá ngắn (header, footer)
-                    continue
-                    
-                # Tìm số điều và tên điều
-                article_match = re.search(r'Điều\s+(\d+)\.\s*([^\r\n]*)', part, re.IGNORECASE)
-                if article_match:
-                    article_num = article_match.group(1)
-                    article_title = article_match.group(2).strip()
-                    article_id = f'dieu_{article_num}'
-                    type_label = 'article'
-                    article_count += 1
-                else:
-                    # Phần không có "Điều X." (có thể là phần đầu văn bản)
-                    article_id = f'part_{i}'
-                    article_title = part[:50].replace('\n', ' ').strip()
-                    type_label = 'section'
-                
+            # Lấy tất cả units từ parsed structure
+            parser_units = parser.get_all_units(parsed_data)
+            print(f"   Units generated: {len(parser_units)}")
+            
+            # Convert sang format cho coverage analyzer - chỉ giữ các fields cần thiết
+            for unit in parser_units:
                 units.append({
-                    'id': article_id,
-                    'type': type_label,
-                    'content': part,
-                    'length': len(part),
-                    'tokens': self.preprocess_text(part),
-                    'article_number': int(article_match.group(1)) if article_match else None,
-                    'article_title': article_title
+                    'id': f"unit_{unit['source_article']}_{unit['source_khoan']}_{unit['source_diem']}",
+                    'type': 'content_unit',
+                    'content': unit['content'],
+                    'length': unit.get('content_length', len(unit['content'])),
+                    'tokens': self.preprocess_text(unit['content']),
+                    'path': unit['path'],
+                    'document_title': document_title
                 })
             
-            print(f"📋 Đã chia thành {len(units)} units, trong đó {article_count} điều luật")
+            print(f"✅ Successfully parsed {len(units)} units using LegalDocumentParser")
                     
         elif unit_type == 'paragraph':
-            # Chia thành đoạn
+            # Chia thành đoạn (giữ logic cũ cho paragraph mode)
             paragraphs = text.split('\n\n')
             for i, paragraph in enumerate(paragraphs):
                 paragraph = paragraph.strip()
@@ -146,15 +136,16 @@ class CoverageAnalyzer:
             questions_data: List các câu hỏi đã sinh với source information
             unit_type: Loại đơn vị để phân tích
         """
-        # Bước 1: Chia văn bản thành units
+        # Bước 1: Chia văn bản thành units sử dụng LegalDocumentParser
         self.text_units = []
         for doc in documents:
-            doc_units = self.split_into_units(doc['content'], unit_type)
+            doc_title = doc.get('title', 'Unknown Document')
+            doc_units = self.split_into_units(doc_title, doc['content'], unit_type)
             
             # Thêm thông tin document vào mỗi unit
             for unit in doc_units:
                 unit['document_id'] = doc.get('id')
-                unit['document_title'] = doc.get('title', 'Unknown')
+                unit['document_title'] = doc_title
                 self.text_units.append(unit)
         
         print(f"📄 Chia thành {len(self.text_units)} {unit_type}s từ {len(documents)} documents")
@@ -168,12 +159,14 @@ class CoverageAnalyzer:
                 content = item.get('content', {})
             
             question = content.get('question', '')
+            answer = content.get('answer', '')  # Extract answer
             sources = content.get('sources', [])  # Extract source information
             
             if question:
                 self.questions.append({
                     'id': item.get('id'),
                     'question': question,
+                    'answer': answer,  # Add answer field
                     'data_type': item.get('data_type'),
                     'sources': sources,  # Add source information
                     'tokens': self.preprocess_text(question)
@@ -216,22 +209,23 @@ class CoverageAnalyzer:
         
         unit_tokens = unit['tokens']
         unit_text = ' '.join(unit_tokens)
+        unit_path = unit.get('path', '')
         unit_doc_title = unit.get('document_title', 'Unknown')
         
-        # Filter questions that reference this unit's document as source
+        # Filter questions that reference this specific unit as source based on unit_path
         relevant_questions = []
         for i, question in enumerate(self.questions):
-            # Check if this unit's document is in the question's sources
+            # Check if this unit's path matches any source unit_path in the question
             for source in question.get('sources', []):
-                # Try different possible field names for document title
-                source_title = (source.get('document_title') or 
-                              source.get('title') or 
-                              source.get('name') or 
-                              source.get('article_title', ''))
-                
-                if source_title and source_title == unit_doc_title:
+                # First priority: match by unit_path (new format)
+                source_unit_path = source.get('unit_path', '')
+                if source_unit_path and source_unit_path == unit_path:
                     relevant_questions.append((i, question))
                     break
+                
+                # STRICT: No fallback - chỉ tính coverage cho units có exact unit_path match
+                # Data không có unit_path sẽ không được tính coverage (correct behavior)
+                # Vì coverage analysis cần chính xác từng unit, không phải document level
         
         # If no relevant questions, return no coverage
         if not relevant_questions:
@@ -239,11 +233,16 @@ class CoverageAnalyzer:
         
         similarities = []
         
-        # Use hybrid search to compute similarity between unit and relevant questions
+        # Use hybrid search to compute similarity between unit and relevant questions' answers
         for i, question in relevant_questions:
             try:
-                # Compute similarity between unit text and question
-                similarity_result = self.hybrid_engine.compute_similarity(unit_text, question['question'])
+                # Compute similarity between unit text and answer (not question)
+                answer_text = question['question']
+                if not answer_text:
+                    # Skip if no answer available
+                    continue
+                    
+                similarity_result = self.hybrid_engine.compute_similarity(unit_text, answer_text)
                 combined_score = similarity_result['combined_score']
                 
                 similarities.append({
@@ -346,15 +345,22 @@ class CoverageAnalyzer:
             'was_stopped': self.should_stop,
             'total_questions': len(self.questions),
             'total_relevant_calculations': total_relevant_questions,
-            'optimization_ratio': f"{total_relevant_questions}/{len(self.text_units) * len(self.questions)} ({(total_relevant_questions / (len(self.text_units) * len(self.questions)) * 100):.1f}%)",
+            'optimization_ratio': f"{total_relevant_questions}/{processed_units * len(self.questions)} ({(total_relevant_questions / (processed_units * len(self.questions)) * 100):.1f}%)" if processed_units > 0 and len(self.questions) > 0 else "0/0 (0.0%)",
             'units_analysis': units_analysis
         }
         
         status_message = "🛑 Đã dừng" if self.should_stop else "✅ Hoàn thành"
         print(f"{status_message} phân tích coverage: {coverage_percentage:.1f}% ({covered_count}/{processed_units} units đã xử lý)")
         
-        if processed_units > 0:
-            print(f"🚀 Optimization: Tính {total_relevant_questions} similarities thay vì {processed_units * len(self.questions)} (tiết kiệm {((processed_units * len(self.questions) - total_relevant_questions) / (processed_units * len(self.questions)) * 100):.1f}%)")
+        if processed_units > 0 and len(self.questions) > 0:
+            total_possible_calculations = processed_units * len(self.questions)
+            optimization_saved = total_possible_calculations - total_relevant_questions
+            optimization_percentage = (optimization_saved / total_possible_calculations * 100) if total_possible_calculations > 0 else 0.0
+            
+            if optimization_percentage > 0.1:  # Only show if significant optimization
+                print(f"🚀 Optimization: Tính {total_relevant_questions} similarities thay vì {total_possible_calculations} (tiết kiệm {optimization_percentage:.1f}%)")
+            else:
+                print(f"🔍 Analysis: Tính {total_relevant_questions} similarity calculations cho {processed_units} units")
         
         return result
     

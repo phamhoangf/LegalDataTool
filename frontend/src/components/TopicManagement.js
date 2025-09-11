@@ -23,8 +23,10 @@ import {
   UploadOutlined,
   FileTextOutlined,
   EyeOutlined,
+  EditOutlined,
   DeleteOutlined,
-  LinkOutlined
+  LinkOutlined,
+  ReloadOutlined
 } from '@ant-design/icons';
 import apiService from '../services/api';
 
@@ -38,10 +40,12 @@ const TopicManagement = () => {
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
+  const [editModalVisible, setEditModalVisible] = useState(false);
   const [uploadModalVisible, setUploadModalVisible] = useState(false);
   const [detailModalVisible, setDetailModalVisible] = useState(false);
   const [previewModalVisible, setPreviewModalVisible] = useState(false);
   const [selectedTopic, setSelectedTopic] = useState(null);
+  const [editingTopic, setEditingTopic] = useState(null);
   const [selectedDocumentIndex, setSelectedDocumentIndex] = useState(0);
   const [searchText, setSearchText] = useState('');
   const [selectedDocument, setSelectedDocument] = useState(null);
@@ -92,6 +96,9 @@ const TopicManagement = () => {
       await apiService.deleteTopic(topicId);
       message.success('Xóa chủ đề thành công!');
       loadTopics();
+      
+      // Trigger refresh statistics để cập nhật số liệu
+      window.dispatchEvent(new Event('refreshStats'));
     } catch (error) {
       message.error('Không thể xóa chủ đề');
     }
@@ -206,6 +213,75 @@ const TopicManagement = () => {
     }
   };
 
+  const handleReparseTopicDocuments = async (topicId, topicName) => {
+    try {
+      setLoading(true);
+      message.loading({ content: 'Đang re-parse tài liệu...', key: 'reparse' });
+      
+      const response = await apiService.post(`/api/topics/${topicId}/documents/reparse`);
+      
+      message.success({
+        content: `Re-parse thành công! ${response.data.updated_count}/${response.data.total_documents} tài liệu đã được cập nhật`,
+        key: 'reparse',
+        duration: 4
+      });
+      
+      // Reload topics để cập nhật thông tin
+      loadTopics();
+    } catch (error) {
+      message.error({
+        content: 'Không thể re-parse tài liệu',
+        key: 'reparse'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEditTopic = (topic) => {
+    setEditingTopic(topic);
+    setEditModalVisible(true);
+  };
+
+  const handleUpdateTopic = async (values) => {
+    try {
+      console.log('Updating topic:', editingTopic.id, values); // Debug log
+      await apiService.updateTopic(editingTopic.id, values);
+      message.success('Cập nhật chủ đề thành công!');
+      setEditModalVisible(false);
+      setEditingTopic(null);
+      loadTopics();
+    } catch (error) {
+      console.error('Update topic error:', error); // Debug log
+      message.error(`Không thể cập nhật chủ đề: ${error.response?.data?.error || error.message}`);
+    }
+  };
+
+  const handleReparseAllDocuments = async () => {
+    try {
+      setLoading(true);
+      message.loading({ content: 'Đang re-parse tất cả tài liệu...', key: 'reparse' });
+      
+      const response = await apiService.post('/api/documents/reparse');
+      
+      message.success({
+        content: `Re-parse thành công! ${response.data.updated_count}/${response.data.total_documents} tài liệu đã được cập nhật`,
+        key: 'reparse',
+        duration: 4
+      });
+      
+      // Reload topics để cập nhật thông tin
+      loadTopics();
+    } catch (error) {
+      message.error({
+        content: 'Không thể re-parse tài liệu',
+        key: 'reparse'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const uploadProps = {
     name: 'file',
     multiple: false,
@@ -307,9 +383,17 @@ const TopicManagement = () => {
     {
       title: 'Thao Tác',
       key: 'actions',
-      width: 120,
+      width: 220,
       render: (_, record) => (
-        <Space size="small">
+        <Space size="small" wrap style={{ flexWrap: 'wrap' }}>
+          <Tooltip title="Chỉnh Sửa">
+            <Button
+              icon={<EditOutlined />}
+              size="small"
+              onClick={() => handleEditTopic(record)}
+            />
+          </Tooltip>
+
           <Tooltip title="Tải Văn Bản">
             <Button
               icon={<UploadOutlined />}
@@ -325,51 +409,24 @@ const TopicManagement = () => {
             <Button
               icon={<EyeOutlined />}
               size="small"
-              // onClick={() => {
-              //   Modal.info({
-              //     title: `Chi tiết: ${record.name}`,
-              //     width: 700,
-              //     content: (
-              //       <div>
-              //         <p><strong>Mô tả:</strong> {record.description}</p>
-                      
-              //         <Divider orientation="left">Tài liệu ({record.document_count || 0})</Divider>
-              //         {record.documents && record.documents.length > 0 ? (
-              //           <div style={{ marginBottom: 16 }}>
-              //             {record.documents.map((doc, index) => (
-              //               <Tag key={doc.id} color="blue" style={{ marginBottom: 4 }}>
-              //                 <FileTextOutlined /> {doc.title}
-              //               </Tag>
-              //             ))}
-              //           </div>
-              //         ) : (
-              //           <p style={{ color: '#999', fontStyle: 'italic' }}>
-              //             Chưa có tài liệu nào được liên kết
-              //           </p>
-              //         )}
-                      
-              //         {record.legal_text && record.legal_text.trim().length > 0 && (
-              //           <div>
-              //             <Divider orientation="left">Nội dung văn bản</Divider>
-              //             <div style={{ 
-              //               maxHeight: 300, 
-              //               overflow: 'auto',
-              //               background: '#f5f5f5',
-              //               padding: 12,
-              //               borderRadius: 4,
-              //               fontSize: '13px',
-              //               lineHeight: '1.5'
-              //             }}>
-              //               {record.legal_text.substring(0, 2000)}
-              //               {record.legal_text.length > 2000 && '...'}
-              //             </div>
-              //           </div>
-              //         )}
-              //       </div>
-              //     ),
-              //   });
-              // }}
               onClick={() => showTopicDetails(record)}
+            />
+          </Tooltip>
+
+          <Tooltip title="Re-parse Tài Liệu">
+            <Button
+              icon={<ReloadOutlined />}
+              size="small"
+              disabled={!record.document_count || record.document_count === 0}
+              onClick={() => {
+                Modal.confirm({
+                  title: 'Re-parse tài liệu',
+                  content: `Bạn có muốn re-parse lại tất cả ${record.document_count} tài liệu của topic "${record.name}" với logic parser mới không?`,
+                  onOk: () => handleReparseTopicDocuments(record.id, record.name),
+                  okText: 'Re-parse',
+                  cancelText: 'Hủy'
+                });
+              }}
             />
           </Tooltip>
           
@@ -404,13 +461,29 @@ const TopicManagement = () => {
       <Card
         title="Danh Sách Chủ Đề"
         extra={
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={() => setModalVisible(true)}
-          >
-            Tạo Chủ Đề Mới
-          </Button>
+          <Space>
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={() => {
+                Modal.confirm({
+                  title: 'Re-parse tất cả tài liệu',
+                  content: 'Bạn có muốn re-parse lại tất cả tài liệu trong hệ thống với logic parser mới không? Quá trình này có thể mất vài phút.',
+                  onOk: handleReparseAllDocuments,
+                  okText: 'Re-parse All',
+                  cancelText: 'Hủy'
+                });
+              }}
+            >
+              Re-parse All
+            </Button>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => setModalVisible(true)}
+            >
+              Tạo Chủ Đề Mới
+            </Button>
+          </Space>
         }
       >
         <Table
@@ -694,6 +767,61 @@ const TopicManagement = () => {
           </TabPane>
           {/*----------------------------------------------------*/}
         </Tabs>
+      </Modal>
+
+      {/* Modal Chỉnh Sửa Chủ Đề */}
+      <Modal
+        title="Chỉnh Sửa Chủ Đề"
+        open={editModalVisible}
+        onCancel={() => {
+          setEditModalVisible(false);
+          setEditingTopic(null);
+        }}
+        footer={null}
+        width={600}
+      >
+        <Form
+          layout="vertical"
+          onFinish={handleUpdateTopic}
+          initialValues={{
+            name: editingTopic?.name || '',
+            description: editingTopic?.description || ''
+          }}
+          key={editingTopic?.id} // Force re-render when editing different topic
+        >
+          <Form.Item
+            label="Tên Chủ Đề"
+            name="name"
+            rules={[{ required: true, message: 'Vui lòng nhập tên chủ đề!' }]}
+          >
+            <Input placeholder="Nhập tên chủ đề..." />
+          </Form.Item>
+
+          <Form.Item
+            label="Mô Tả"
+            name="description"
+            rules={[{ required: true, message: 'Vui lòng nhập mô tả!' }]}
+          >
+            <TextArea
+              rows={4}
+              placeholder="Nhập mô tả chi tiết về chủ đề..."
+            />
+          </Form.Item>
+
+          <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
+            <Space>
+              <Button onClick={() => {
+                setEditModalVisible(false);
+                setEditingTopic(null);
+              }}>
+                Hủy
+              </Button>
+              <Button type="primary" htmlType="submit">
+                Cập Nhật
+              </Button>
+            </Space>
+          </Form.Item>
+        </Form>
       </Modal>
       
       {/* Modal Preview Document */}

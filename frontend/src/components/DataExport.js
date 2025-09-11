@@ -111,52 +111,56 @@ const { Option } = Select;const DataExport = () => {
   const renderPreviewContent = (item) => {
     const content = typeof item.content === 'string' ? JSON.parse(item.content) : item.content;
     
+    const truncateText = (text, maxLength = 100) => {
+      return text && text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
+    };
+    
     switch (item.data_type) {
       case 'word_matching':
         return (
-          <div>
-            <strong>Câu hỏi:</strong> {content.question}<br />
-            <strong>Câu trả lời:</strong> {content.answer}<br />
+          <div style={{ maxWidth: '400px', wordWrap: 'break-word' }}>
+            <strong>Câu hỏi:</strong> {truncateText(content.question, 80)}<br />
+            <strong>Câu trả lời:</strong> {truncateText(content.answer, 80)}<br />
             {content.metadata?.source_document && (
-              <><strong>Nguồn:</strong> {content.metadata.source_document}<br /></>
+              <><strong>Nguồn:</strong> {truncateText(content.metadata.source_document, 50)}<br /></>
             )}
           </div>
         );
       case 'concept_understanding':
         return (
-          <div>
-            <strong>Câu hỏi:</strong> {content.question}<br />
-            <strong>Câu trả lời:</strong> {content.answer}<br />
-            <strong>Giải thích:</strong> {content.explanation?.substring(0, 100)}...<br />
+          <div style={{ maxWidth: '400px', wordWrap: 'break-word' }}>
+            <strong>Câu hỏi:</strong> {truncateText(content.question, 80)}<br />
+            <strong>Câu trả lời:</strong> {truncateText(content.answer, 80)}<br />
+            <strong>Giải thích:</strong> {truncateText(content.explanation, 60)}<br />
             {content.metadata?.source_documents && (
-              <><strong>Nguồn:</strong> {content.metadata.source_documents.join(', ')}<br /></>
+              <><strong>Nguồn:</strong> {truncateText(content.metadata.source_documents.join(', '), 50)}<br /></>
             )}
           </div>
         );
       case 'multi_paragraph_reading':
         return (
-          <div>
-            <strong>Câu hỏi:</strong> {content.question}<br />
-            <strong>Câu trả lời:</strong> {content.answer}<br />
-            <strong>Lý do:</strong> {content.reasoning?.substring(0, 100)}...<br />
+          <div style={{ maxWidth: '400px', wordWrap: 'break-word' }}>
+            <strong>Câu hỏi:</strong> {truncateText(content.question, 80)}<br />
+            <strong>Câu trả lời:</strong> {truncateText(content.answer, 80)}<br />
+            <strong>Lý do:</strong> {truncateText(content.reasoning, 60)}<br />
             {content.metadata?.source_documents && (
-              <><strong>Nguồn:</strong> {content.metadata.source_documents.join(', ')}<br /></>
+              <><strong>Nguồn:</strong> {truncateText(content.metadata.source_documents.join(', '), 50)}<br /></>
             )}
           </div>
         );
       case 'multi_hop_reasoning':
         return (
-          <div>
-            <strong>Câu hỏi:</strong> {content.question}<br />
-            <strong>Câu trả lời:</strong> {content.answer}<br />
-            <strong>Các bước:</strong> {content.reasoning_steps?.join(' → ')}<br />
+          <div style={{ maxWidth: '400px', wordWrap: 'break-word' }}>
+            <strong>Câu hỏi:</strong> {truncateText(content.question, 80)}<br />
+            <strong>Câu trả lời:</strong> {truncateText(content.answer, 80)}<br />
+            <strong>Các bước:</strong> {truncateText(content.reasoning_steps?.join(' → '), 60)}<br />
             {content.metadata?.source_documents && (
-              <><strong>Nguồn:</strong> {content.metadata.source_documents.join(', ')}<br /></>
+              <><strong>Nguồn:</strong> {truncateText(content.metadata.source_documents.join(', '), 50)}<br /></>
             )}
           </div>
         );
       default:
-        return JSON.stringify(content);
+        return <div style={{ maxWidth: '400px', wordWrap: 'break-word' }}>{truncateText(JSON.stringify(content), 100)}</div>;
     }
   };
 
@@ -381,25 +385,57 @@ const { Option } = Select;const DataExport = () => {
       <Card title="Hướng Dẫn Sử Dụng File Xuất" style={{ marginTop: 24 }}>
         <div>
           <h4>Định dạng Word Matching:</h4>
-          <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 4 }}>
+          <pre style={{ 
+            background: '#f5f5f5', 
+            padding: 12, 
+            borderRadius: 4,
+            overflowX: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordWrap: 'break-word',
+            fontSize: '12px'
+          }}>
 {`{"question": "Độ tuổi tối thiểu để lái xe ô tô là bao nhiêu?", "answer": "18 tuổi", "metadata": {"source_document": "Luật Giao thông"}}
 {"question": "Ai có thể cấp giấy phép lái xe?", "answer": "Cơ quan có thẩm quyền", "metadata": {"source_document": "Nghị định 12"}}`}
           </pre>
 
           <h4>Định dạng Concept Understanding:</h4>
-          <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 4 }}>
+          <pre style={{ 
+            background: '#f5f5f5', 
+            padding: 12, 
+            borderRadius: 4,
+            overflowX: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordWrap: 'break-word',
+            fontSize: '12px'
+          }}>
 {`{"question": "Khái niệm giao thông đường bộ là gì?", "answer": "Hoạt động di chuyển người, hàng hóa bằng phương tiện giao thông", "explanation": "Định nghĩa chi tiết về giao thông đường bộ", "metadata": {"source_documents": ["Luật Giao thông", "Nghị định 12"]}}
 {"question": "Nguyên tắc cấp giấy phép lái xe?", "answer": "Đúng tuổi, đủ sức khỏe, có kiến thức", "explanation": "Giải thích về các điều kiện cấp phép", "metadata": {"source_documents": ["Luật Giao thông"]}}`}
           </pre>
 
           <h4>Định dạng Multi Paragraph Reading:</h4>
-          <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 4 }}>
+          <pre style={{ 
+            background: '#f5f5f5', 
+            padding: 12, 
+            borderRadius: 4,
+            overflowX: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordWrap: 'break-word',
+            fontSize: '12px'
+          }}>
 {`{"question": "So sánh điều kiện cấp GPLX hạng A và hạng B", "answer": "Hạng A: từ 16 tuổi, Hạng B: từ 18 tuổi", "reasoning": "Dựa vào nhiều điều luật khác nhau", "metadata": {"source_documents": ["Luật Giao thông", "Nghị định 12", "Thông tư 58"]}}
 {"question": "Quy trình đào tạo và sát hạch lái xe", "answer": "Đào tạo lý thuyết → thực hành → sát hạch", "reasoning": "Tổng hợp từ các quy định về đào tạo", "metadata": {"source_documents": ["Nghị định 12", "Thông tư 58"]}}`}
           </pre>
 
           <h4>Định dạng Multi Hop Reasoning:</h4>
-          <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 4 }}>
+          <pre style={{ 
+            background: '#f5f5f5', 
+            padding: 12, 
+            borderRadius: 4,
+            overflowX: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordWrap: 'break-word',
+            fontSize: '12px'
+          }}>
 {`{"question": "Một người 17 tuổi muốn lái xe cần làm gì?", "answer": "Chờ đủ 18 tuổi hoặc học hạng A1", "reasoning_steps": ["Kiểm tra độ tuổi", "Xem loại xe muốn lái", "Tìm quy định phù hợp"], "metadata": {"source_documents": ["Luật Giao thông", "Nghị định 12", "Thông tư 58"]}}
 {"question": "Chi phí và thời gian hoàn tất giấy phép lái xe B1", "answer": "Khoảng 3-6 tháng, chi phí 8-12 triệu", "reasoning_steps": ["Tính thời gian đào tạo", "Cộng thời gian chờ sát hạch", "Tổng hợp chi phí các khâu"], "metadata": {"source_documents": ["Nghị định 12", "Thông tư 58", "Quyết định phí"]}}`}
           </pre>
@@ -409,7 +445,13 @@ const { Option } = Select;const DataExport = () => {
           <Alert
             message="Sử dụng với Python"
             description={
-              <pre style={{ margin: 0 }}>
+              <pre style={{ 
+                margin: 0,
+                overflowX: 'auto',
+                whiteSpace: 'pre-wrap',
+                wordWrap: 'break-word',
+                fontSize: '12px'
+              }}>
 {`import jsonlines
 
 # Đọc file JSONL cho Word Matching

@@ -121,6 +121,12 @@ def delete_topic(topic_id):
     
     # Xóa tất cả dữ liệu liên quan
     TopicDocument.query.filter_by(topic_id=topic_id).delete()
+    
+    # Xóa labels trước, sau đó mới xóa generated data (để tránh orphaned labels)
+    generated_data_ids = [gd.id for gd in GeneratedData.query.filter_by(topic_id=topic_id).all()]
+    if generated_data_ids:
+        LabeledData.query.filter(LabeledData.generated_data_id.in_(generated_data_ids)).delete(synchronize_session=False)
+    
     GeneratedData.query.filter_by(topic_id=topic_id).delete()
     
     db.session.delete(topic)
@@ -494,41 +500,79 @@ def unlink_document_from_topic(topic_id, document_id):
 @app.route('/api/documents/upload', methods=['POST'])
 def upload_document_file():
     """Upload file tài liệu mà không cần liên kết với chủ đề"""
-    if 'file' not in request.files:
-        return jsonify({'error': 'Không có file được tải lên'}), 400
+    try:
+        print(f"📁 Upload request received. Files: {list(request.files.keys())}")
+        print(f"📝 Form data: {dict(request.form)}")
+        
+        if 'file' not in request.files:
+            print("❌ No file in request")
+            return jsonify({'error': 'Không có file được tải lên'}), 400
 
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'Tên file không hợp lệ'}), 400
+        file = request.files['file']
+        print(f"📄 File: {file.filename}, size: {len(file.read())} bytes")
+        file.seek(0)  # Reset file pointer after reading size
+        
+        if file.filename == '':
+            print("❌ Empty filename")
+            return jsonify({'error': 'Tên file không hợp lệ'}), 400
 
-    title = request.form.get('title', file.filename)
-    document_type = request.form.get('document_type', 'law')
+        title = request.form.get('title', file.filename)
+        document_type = request.form.get('document_type', 'law')
+        print(f"📋 Title: {title}, Type: {document_type}")
 
-    # Xử lý file đa định dạng
-    file_content = file.read()
-    result = process_file(file_content, file.filename)
-    if not result.get('success'):
-        return jsonify({'error': result.get('error', 'Không thể xử lý file')}), 400
+        # Xử lý file đa định dạng
+        file_content = file.read()
+        print(f"🔄 Processing file, content length: {len(file_content)}")
+        result = process_file(file_content, file.filename)
+        print(f"📊 Process result: {result}")
+        
+        if not result.get('success'):
+            error_msg = result.get('error', 'Không thể xử lý file')
+            print(f"❌ Process file failed: {error_msg}")
+            return jsonify({'error': error_msg}), 400
 
-    content = result.get('content', '')
+        content = result.get('content', '')
+        print(f"✅ Content extracted, length: {len(content)}")
 
-    # Tạo document
-    document = LegalDocument(
-        title=title,
-        content=content,
-        document_type=document_type
-    )
+        # Parse document thành các units
+        articles_count = 0
+        try:
+            print(f"🔍 Parsing document structure...")
+            structure = legal_parser.parse_document(title, content)
+            parsed_structure = json.dumps(structure, ensure_ascii=False)
+            articles_count = len(structure.get('articles', []))
+            print(f"✅ Document parsed successfully - {articles_count} điều")
+        except Exception as e:
+            print(f"⚠️ Parse warning: {str(e)}")
+            parsed_structure = None
 
-    db.session.add(document)
-    db.session.commit()
+        # Tạo document
+        document = LegalDocument(
+            title=title,
+            content=content,
+            document_type=document_type,
+            parsed_structure=parsed_structure,
+            articles_count=articles_count
+        )
 
-    return jsonify({
-        'id': document.id,
-        'title': document.title,
-        'message': 'Tài liệu đã được tải lên thành công',
-        'file_type': result.get('file_type'),
-        'metadata': result.get('metadata', {})
-    }), 201
+        db.session.add(document)
+        db.session.commit()
+        print(f"💾 Document saved with ID: {document.id}")
+
+        return jsonify({
+            'id': document.id,
+            'title': document.title,
+            'message': 'Tài liệu đã được tải lên và phân tích thành công',
+            'file_type': result.get('file_type'),
+            'metadata': result.get('metadata', {}),
+            'parsed': parsed_structure is not None
+        }), 201
+        
+    except Exception as e:
+        print(f"💥 Upload error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Lỗi server: {str(e)}'}), 500
 
 @app.route('/api/documents/reparse', methods=['POST'])
 def reparse_all_documents():
@@ -661,12 +705,25 @@ def upload_legal_document():
 
     content = result.get('content', '')
 
+    # Parse document thành các units
+    articles_count = 0
+    try:
+        structure = legal_parser.parse_document(document_title, content)
+        parsed_structure = json.dumps(structure, ensure_ascii=False)
+        articles_count = len(structure.get('articles', []))
+        print(f"✅ Document parsed successfully - {articles_count} điều")
+    except Exception as e:
+        print(f"Parse warning: {str(e)}")
+        parsed_structure = None
+
     # Tạo document mới
     document = LegalDocument(
         title=document_title,
         content=content,
         document_type=document_type,
-        uploaded_by='user'
+        uploaded_by='user',
+        parsed_structure=parsed_structure,
+        articles_count=articles_count
     )
 
     db.session.add(document)
@@ -686,9 +743,10 @@ def upload_legal_document():
     db.session.commit()
 
     return jsonify({
-        'message': 'File đã được tải lên và liên kết thành công',
+        'message': 'File đã được tải lên, phân tích và liên kết thành công',
         'document_id': document.id,
         'file_type': result.get('file_type'),
+        'parsed': parsed_structure is not None,
         'metadata': result.get('metadata', {})
     })
 

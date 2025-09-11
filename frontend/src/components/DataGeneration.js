@@ -28,7 +28,7 @@ const DataGeneration = () => {
   const [selectedTopic, setSelectedTopic] = useState(null);
   const [dataType, setDataType] = useState('word_matching');
   const [llmType, setLlmType] = useState('gemini');
-  const [numSamples, setNumSamples] = useState(10);
+  const [numSamples, setNumSamples] = useState(3);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [generatedData, setGeneratedData] = useState([]);
@@ -163,14 +163,53 @@ const DataGeneration = () => {
               <div style={{ fontSize: '0.8em', color: '#888', fontWeight: '500' }}>
                 📄 {docTitle}
               </div>
-              {docSources.map((source, sourceIndex) => (
-                <div key={sourceIndex} style={{ marginLeft: 12, marginBottom: 2 }}>
-                  <Tag color="volcano" size="small">Điều {source.article_number}</Tag>
-                  <span style={{ fontSize: '0.75em', color: '#999', marginLeft: 4 }}>
-                    {source.article_title}
-                  </span>
-                </div>
-              ))}
+              {docSources.map((source, sourceIndex) => {
+                // Trích xuất thông tin từ unit_path (format: "Document > Điều X > Khoản Y > Điểm Z")
+                // hoặc fallback về article_number/article_title cho data cũ
+                let displayText = '';
+                
+                if (source.unit_path) {
+                  // Format mới: chỉ hiển thị từ "Điều" trở đi
+                  const pathParts = source.unit_path.split(' > ');
+                  
+                  // Tìm phần có "Điều" để bắt đầu hiển thị từ đó
+                  let startIndex = pathParts.findIndex(part => part.includes('Điều'));
+                  if (startIndex === -1) startIndex = 0; // Fallback nếu không tìm thấy "Điều"
+                  
+                  let displayParts = [];
+                  
+                  // Thêm phần Điều
+                  if (startIndex < pathParts.length) {
+                    displayParts.push(pathParts[startIndex]);
+                  }
+                  
+                  // Thêm Khoản nếu có và không phải N/A
+                  if (startIndex + 1 < pathParts.length && !pathParts[startIndex + 1].includes('N/A')) {
+                    displayParts.push(pathParts[startIndex + 1]);
+                  }
+                  
+                  // Thêm Điểm nếu có và không phải N/A
+                  if (startIndex + 2 < pathParts.length && !pathParts[startIndex + 2].includes('N/A')) {
+                    displayParts.push(pathParts[startIndex + 2]);
+                  }
+                  
+                  displayText = displayParts.length > 0 ? displayParts.join(' > ') : source.unit_path;
+                } else if (source.article_number) {
+                  // Format cũ: fallback
+                  displayText = `Điều ${source.article_number}`;
+                  if (source.article_title) {
+                    displayText += `: ${source.article_title}`;
+                  }
+                } else {
+                  displayText = 'N/A';
+                }
+                
+                return (
+                  <div key={sourceIndex} style={{ marginLeft: 12, marginBottom: 2 }}>
+                    <Tag color="volcano" size="small">{displayText}</Tag>
+                  </div>
+                );
+              })}
             </div>
           ))}
         </div>
@@ -336,13 +375,13 @@ const DataGeneration = () => {
                   </div>
                 </Radio>
                 <Radio value="huggingface">
-                  <strong>Qwen3-4B Generate Data</strong> - Model tùy chỉnh (Chuyên biệt)
+                  <strong>Qwen3-4B Generate Data</strong> - Model tùy chỉnh
                   <div style={{ fontSize: '12px', color: '#666', marginLeft: 20 }}>
                     Model được fine-tune cho dữ liệu pháp luật Việt Nam
                   </div>
-                  <div style={{ fontSize: '11px', color: '#ff6b6b', marginLeft: 20 }}>
-                    ⚠️ Cần GPU mạnh, lần đầu sử dụng có thể chậm
-                  </div>
+                  {/* <div style={{ fontSize: '11px', color: '#ff6b6b', marginLeft: 20 }}>
+                    Cần GPU
+                  </div> */}
                 </Radio>
               </Space>
             </Radio.Group>

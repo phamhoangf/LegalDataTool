@@ -173,12 +173,50 @@ const DataLabeling = () => {
               <div style={{ fontWeight: '500', color: '#333', fontSize: '0.9em' }}>
                 📄 {docTitle}
               </div>
-              {docSources.map((source, sourceIndex) => (
-                <div key={sourceIndex} style={{ marginTop: 2, marginLeft: 16, fontSize: '0.85em' }}>
-                  <Tag color="blue" size="small">Điều {source.article_number}</Tag>
-                  <span style={{ color: '#666', marginLeft: 4 }}>{source.article_title}</span>
-                </div>
-              ))}
+              {docSources.map((source, sourceIndex) => {
+                // Trích xuất thông tin từ unit_path (format: "Document > Điều X > Khoản Y > Điểm Z")
+                // hoặc fallback về article_number/article_title cho data cũ
+                let displayText = '';
+                
+                if (source.unit_path) {
+                  // Format mới: trích xuất từ unit_path, chỉ lấy từ "Điều" trở đi
+                  const pathParts = source.unit_path.split(' > ');
+                  const dieuIndex = pathParts.findIndex(part => part.includes('Điều'));
+                  
+                  if (dieuIndex !== -1) {
+                    const relevantParts = pathParts.slice(dieuIndex);
+                    let displayParts = [relevantParts[0]]; // Điều X
+                    
+                    // Thêm Khoản nếu có và không phải N/A
+                    if (relevantParts.length >= 2 && !relevantParts[1].includes('N/A')) {
+                      displayParts.push(relevantParts[1]);
+                    }
+                    
+                    // Thêm Điểm nếu có và không phải N/A
+                    if (relevantParts.length >= 3 && !relevantParts[2].includes('N/A')) {
+                      displayParts.push(relevantParts[2]);
+                    }
+                    
+                    displayText = displayParts.join(' > ');
+                  } else {
+                    displayText = source.unit_path;
+                  }
+                } else if (source.article_number) {
+                  // Format cũ: fallback
+                  displayText = `Điều ${source.article_number}`;
+                  if (source.article_title) {
+                    displayText += `: ${source.article_title}`;
+                  }
+                } else {
+                  displayText = 'N/A';
+                }
+                
+                return (
+                  <div key={sourceIndex} style={{ marginTop: 2, marginLeft: 16, fontSize: '0.85em' }}>
+                    <Tag color="blue" size="small">{displayText}</Tag>
+                  </div>
+                );
+              })}
             </div>
           ))}
         </div>

@@ -172,7 +172,7 @@ const HomePage = () => {
               <div>
                 <p><strong>Bước 1:</strong> Vào "Quản lý chủ đề" để tạo chủ đề mới và tải lên văn bản luật</p>
                 <p><strong>Bước 2:</strong> Vào "Sinh dữ liệu" để tạo các mẫu dữ liệu huấn luyện</p>
-                <p><strong>Bước 3:</strong> Vào "Gán nhãn" để duyệt và chỉnh sửa dữ liệu</p>
+                <p><strong>Bước 3:</strong> Vào "Duyệt dữ liệu" để duyệt và chỉnh sửa dữ liệu</p>
                 <p><strong>Bước 4:</strong> Vào "Xuất dữ liệu" để tải về file .jsonl hoàn chỉnh</p>
               </div>
             }

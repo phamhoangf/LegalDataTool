@@ -50,22 +50,26 @@ const Statistics = () => {
   const [analyzingTopicId, setAnalyzingTopicId] = useState(null); // Track topic đang analyze
   const [coverageSettings, setCoverageSettings] = useState({
     unit_type: 'sentence',
-    threshold: 0.4
+    threshold: 0.35
   });
 
   useEffect(() => {
     loadData();
   }, []);
 
-  const loadData = async () => {
+  const loadData = async (forceRefresh = false) => {
     try {
       setLoading(true);
+      
+      // Thêm timestamp để force refresh cache nếu cần
+      const cacheBuster = forceRefresh ? `?_t=${Date.now()}` : '';
+      
       const [statsResponse, topicsResponse] = await Promise.all([
-        apiService.getStatistics(),
+        fetch(`/api/stats${cacheBuster}`).then(res => res.json()),
         apiService.getTopics()
       ]);
       
-      setStats(statsResponse.data);
+      setStats(statsResponse);
       setTopics(topicsResponse.data);
       setError(null);
     } catch (err) {
@@ -75,6 +79,21 @@ const Statistics = () => {
       setLoading(false);
     }
   };
+
+  // Expose refresh function để các component khác có thể gọi
+  const refreshStats = () => {
+    loadData(true);
+  };
+
+  // Listen for refresh events từ other components
+  useEffect(() => {
+    const handleRefreshStats = () => {
+      refreshStats();
+    };
+    
+    window.addEventListener('refreshStats', handleRefreshStats);
+    return () => window.removeEventListener('refreshStats', handleRefreshStats);
+  }, []);
 
   const analyzeCoverage = async (topicId) => {
     try {
@@ -387,21 +406,6 @@ const Statistics = () => {
         </Col>
       </Row>
 
-      {/* Danh sách chủ đề */}
-      <Row gutter={[16, 16]}>
-        <Col span={24}>
-          <Card title="Danh Sách Chủ Đề" bordered={false}>
-            <Table
-              columns={topicColumns}
-              dataSource={topics}
-              rowKey="id"
-              pagination={{ pageSize: 10 }}
-              size="small"
-            />
-          </Card>
-        </Col>
-      </Row>
-
       {/* Recommendations */}
       <Row gutter={[16, 16]} style={{ marginTop: 24 }}>
         <Col span={24}>
@@ -495,7 +499,7 @@ const Statistics = () => {
             <div style={{ marginBottom: 24 }}>
               <Title level={5}>Tiến Độ Bao Phủ</Title>
               <Progress
-                percent={coverageData.coverage_percentage}
+                percent={Number(coverageData.coverage_percentage.toFixed(1))}
                 status={coverageData.coverage_percentage >= 70 ? 'success' : 'normal'}
                 strokeColor={coverageData.coverage_percentage >= 70 ? '#52c41a' : '#1890ff'}
               />
@@ -533,7 +537,7 @@ const Statistics = () => {
                           </Text>
                         </div>
                         <Progress
-                          percent={stats.coverage_percentage}
+                          percent={Number(stats.coverage_percentage.toFixed(1))}
                           size="small"
                           format={() => `${stats.covered_units}/${stats.total_units}`}
                         />

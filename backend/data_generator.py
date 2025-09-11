@@ -5,6 +5,7 @@ import random
 import os
 import re
 import time  # Add time import for rate limiting
+import requests  # For cloud HuggingFace API calls
 from typing import List, Dict, Any
 from pydantic import BaseModel
 from similarity_checker import QuestionSimilarityChecker
@@ -20,9 +21,9 @@ except ImportError:
     print("⚠️ HuggingFace transformers not available. Install with: pip install transformers torch")
 
 class SourceReference(BaseModel):
-    """Tham chiếu đến nguồn của thông tin"""
-    article_number: str  # Số điều (ví dụ: "60", "61")
-    article_title: str   # Tiêu đề điều (ví dụ: "Điều 60. Độ tuổi của người lái xe")
+    """Tham chiếu đến nguồn của thông tin dựa trên units"""
+    unit_path: str       # Đường dẫn unit (ví dụ: "Luật Giao thông > Điều 60 > Khoản 1")
+    unit_id: str         # ID của unit (ví dụ: "unit_60_1_a")
     document_title: str  # Tên tài liệu (ví dụ: "Luật Giao thông đường bộ 2008")
 
 class LegalQA(BaseModel):
@@ -110,36 +111,46 @@ class DataGenerator:
         return response.parsed
     
     def generate_qa_with_huggingface(self, prompt: str, temperature: float = 0.7) -> LegalQAList:
-        """Sinh QA bằng HuggingFace model"""
-        if not self.hf_model:
-            raise ValueError("HuggingFace model not initialized. Call init_huggingface_model() first")
+        """Sinh QA bằng HuggingFace model trên cloud (Kaggle/ngrok)"""
+        import requests
         
-        # Format prompt cho model
-        formatted_prompt = f"<|system|>Bạn là trợ lý AI chuyên về pháp luật Việt Nam. Hãy tạo câu hỏi và câu trả lời từ văn bản pháp luật.<|end|>\n<|user|>{prompt}<|end|>\n<|assistant|>"
+        # URL ngrok từ Kaggle notebook
+        NGROK_URL = "https://evidently-cheerful-griffon.ngrok-free.app/generate"
         
-        inputs = self.hf_tokenizer.encode(formatted_prompt, return_tensors="pt")
-        if self.hf_model.device.type == "cuda":
-            inputs = inputs.to("cuda")
+        # Format messages như trong test_ngrok.py
+        messages = [{
+            "role": "user",
+            "content": prompt
+        }]
         
-        with torch.no_grad():
-            outputs = self.hf_model.generate(
-                inputs,
-                max_new_tokens=2048,
-                temperature=temperature,
-                do_sample=True,
-                top_p=0.9,
-                pad_token_id=self.hf_tokenizer.eos_token_id
-            )
+        payload = {"messages": messages}
         
-        response_text = self.hf_tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
-        
-        # Parse JSON response
         try:
-            response_json = json.loads(response_text)
-            return LegalQAList(**response_json)
-        except json.JSONDecodeError:
-            # Fallback - tạo single QA nếu không parse được
-            return LegalQAList(qa_pairs=[LegalQA(question="Sample question", answer="Sample answer")])
+            print("🌐 Đang gửi yêu cầu đến HuggingFace model trên cloud...")
+            response = requests.post(NGROK_URL, json=payload, timeout=60)
+            response.raise_for_status()
+            
+            result = response.json()
+            response_text = result.get('response', '')
+            
+            print(f"📥 Nhận được phản hồi từ cloud model")
+            
+            # Parse JSON response
+            try:
+                response_json = json.loads(response_text)
+                return LegalQAList(**response_json)
+            except json.JSONDecodeError as e:
+                print(f"⚠️ Không thể parse JSON từ cloud model: {e}")
+                print(f"Raw response: {response_text[:200]}...")
+                # Fallback - tạo single QA nếu không parse được
+                return LegalQAList(qa_pairs=[LegalQA(question="Sample question", answer="Sample answer")])
+                
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Lỗi khi kết nối đến cloud model: {e}")
+            raise ValueError(f"Failed to connect to HuggingFace cloud model: {e}")
+        except Exception as e:
+            print(f"❌ Lỗi không xác định với cloud model: {e}")
+            raise ValueError(f"Error with HuggingFace cloud model: {e}")
     
     def generate_qa(self, prompt: str, llm_type: str = "gemini", temperature: float = 0.7) -> LegalQAList:
         """Sinh QA với LLM được chọn"""
@@ -405,8 +416,8 @@ class DataGenerator:
             
             for unit in selected_units:
                 source_ref = SourceReference(
-                    article_number=str(unit['metadata']['source_article']) if unit['metadata']['source_article'] else "unknown",
-                    article_title=unit['title'],
+                    unit_path=unit.get('path', unit['title']),
+                    unit_id=unit.get('id', 'unknown_id'),
                     document_title=unit['document_title']
                 )
                 iteration_sources.append(source_ref)
@@ -435,8 +446,8 @@ class DataGenerator:
                         'difficulty': difficulty,  
                         'sources': [
                             {
-                                'article_number': src.article_number,
-                                'article_title': src.article_title,
+                                'unit_path': src.unit_path,
+                                'unit_id': src.unit_id,
                                 'document_title': src.document_title
                             } for src in iteration_sources  # Sources cho iteration này
                         ],
@@ -551,7 +562,7 @@ class DataGenerator:
     2. TUYỆT ĐỐI KHÔNG dùng "dựa trên điều luật trên", "theo quy định trên", "căn cứ vào điều trên"
     3. Không cần thiết phải trích dẫn, NẾU cần trích dẫn: phải ghi ĐẦY ĐỦ tên văn bản (ví dụ: "Theo Luật Giao thông đường bộ 2008, Điều 25") hoặc nội dung phần văn bản cần trích dẫn
     4. Bạn có thể tham khảo bắt đầu câu hỏi bằng "{starter}..."
-    5. Đáp án cần giải thích khái niệm đầy đủ, có thể bao gồm ví dụ minh họa
+    5. Đáp án cần giải thích khái niệm đầy đủ, không cụt lủn như "Là việc kiểm tra định kỳ" hay "Để đảm bảo an toàn" nhưng cũng không diễn giải quá lê thê
 
     VÍ DỤ TỐT:
     Question: "Tại sao việc kiểm định định kỳ phương tiện giao thông là bắt buộc?"

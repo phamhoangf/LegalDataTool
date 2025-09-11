@@ -188,6 +188,68 @@ def process_docx_file(file_content: bytes, filename: str = None) -> Dict:
             'error': f'Lỗi xử lý DOCX: {str(e)}'
         }
 
+def process_doc_file(file_content: bytes, filename: str = None) -> Dict:
+    """
+    Xử lý file DOC cũ (Word 97-2003) bằng python-docx2txt
+    """
+    try:
+        import docx2txt
+        import io
+        import tempfile
+        import os
+        
+        # Ghi file tạm để docx2txt có thể xử lý
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.doc') as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+        
+        try:
+            # Trích xuất text từ file .doc
+            text = docx2txt.process(temp_file_path)
+            
+            if not text or not text.strip():
+                return {
+                    'success': False,
+                    'error': 'Không có nội dung text trong file Word'
+                }
+            
+            # Chia text thành các đoạn
+            content_parts = []
+            paragraphs = text.split('\n')
+            for para in paragraphs:
+                if para.strip():
+                    content_parts.append(para.strip())
+            
+            metadata = {
+                'paragraphs': len(content_parts),
+                'format': 'doc (legacy Word format)'
+            }
+            
+            return {
+                'success': True,
+                'content': '\n\n'.join(content_parts),
+                'file_type': 'doc',
+                'metadata': metadata
+            }
+            
+        finally:
+            # Xóa file tạm
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass
+        
+    except ImportError:
+        return {
+            'success': False,
+            'error': 'python-docx2txt chưa được cài đặt. Chạy: pip install python-docx2txt'
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'Lỗi xử lý DOC: {str(e)}'
+        }
+
 def get_file_type(filename: str) -> str:
     """
     Xác định loại file từ extension
@@ -199,8 +261,10 @@ def get_file_type(filename: str) -> str:
     
     if ext == '.pdf':
         return 'pdf'
-    elif ext in ['.docx', '.doc']:
+    elif ext == '.docx':
         return 'docx'
+    elif ext == '.doc':
+        return 'doc'
     elif ext in ['.txt', '.text']:
         return 'text'
     elif ext in ['.html', '.htm']:
@@ -218,6 +282,8 @@ def process_file(file_content: bytes, filename: str = None) -> Dict:
         return process_pdf_file(file_content, filename)
     elif file_type == 'docx':
         return process_docx_file(file_content, filename)
+    elif file_type == 'doc':
+        return process_doc_file(file_content, filename)
     else:
         # Mặc định xử lý như text file
         return process_text_file(file_content, filename)
@@ -258,12 +324,22 @@ def get_supported_formats() -> Dict:
     except ImportError:
         pass
     
-    # Kiểm tra python-docx
+    # Kiểm tra python-docx (cho .docx)
     try:
         from docx import Document
         formats['docx'] = {
-            'extensions': ['.docx', '.doc'],
-            'description': 'Microsoft Word documents'
+            'extensions': ['.docx'],
+            'description': 'Microsoft Word documents (2007+)'
+        }
+    except ImportError:
+        pass
+    
+    # Kiểm tra python-docx2txt (cho .doc cũ)
+    try:
+        import docx2txt
+        formats['doc'] = {
+            'extensions': ['.doc'],
+            'description': 'Microsoft Word documents (97-2003)'
         }
     except ImportError:
         pass
