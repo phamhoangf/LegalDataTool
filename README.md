@@ -448,6 +448,9 @@ MIT License - Free for educational and research purposes.
 ## Link Data
 https://huggingface.co/datasets/phamhoangf/legal_generated_data
 
+## Finetuned Qwen 3 4B
+https://huggingface.co/phamhoangf/qwen3-4b-generate-data
+
 ## 📞 Support
 
 For issues and questions:
