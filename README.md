@@ -446,7 +446,7 @@ MIT License - Free for educational and research purposes.
 5. Open Pull Request
 
 ## Link Data
-https://huggingface.co/datasets/phamhoangf/legal-generated-data
+https://huggingface.co/datasets/phamhoangf/legal_generated_data
 
 ## 📞 Support
 
