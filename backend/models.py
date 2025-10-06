@@ -10,6 +10,7 @@ class LegalDocument(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(500), nullable=False)
     content = db.Column(db.Text, nullable=False)
+    parsed_structure = db.Column(db.Text)  # JSON string of parsed document structure
     document_type = db.Column(db.String(50))  # 'law', 'decree', 'circular', etc.
     document_number = db.Column(db.String(100))  # Số hiệu văn bản
     issued_date = db.Column(db.Date)
@@ -18,6 +19,7 @@ class LegalDocument(db.Model):
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     uploaded_by = db.Column(db.String(100))
+    articles_count = db.Column(db.Integer, default=0)  # Pre-calculated articles count for performance
     
     # Relationship
     topic_documents = db.relationship('TopicDocument', backref='document', lazy=True)

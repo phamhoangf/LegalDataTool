@@ -149,6 +149,80 @@ const DataLabeling = () => {
   const renderDataContent = (item) => {
     const content = typeof item.content === 'string' ? JSON.parse(item.content) : item.content;
     
+    // Render sources information nếu có
+    const renderSources = (sources) => {
+      if (!sources || !Array.isArray(sources) || sources.length === 0) {
+        return null;
+      }
+      
+      // Group sources by document để hiển thị rõ ràng hơn
+      const sourcesByDoc = sources.reduce((acc, source) => {
+        const docTitle = source.document_title;
+        if (!acc[docTitle]) {
+          acc[docTitle] = [];
+        }
+        acc[docTitle].push(source);
+        return acc;
+      }, {});
+      
+      return (
+        <div className="sources-info" style={{ marginTop: 12, padding: 8, backgroundColor: '#f5f5f5', borderRadius: 4 }}>
+          <strong>📚 Nguồn tham chiếu ({sources.length} điều):</strong>
+          {Object.entries(sourcesByDoc).map(([docTitle, docSources], docIndex) => (
+            <div key={docIndex} style={{ marginTop: 6 }}>
+              <div style={{ fontWeight: '500', color: '#333', fontSize: '0.9em' }}>
+                📄 {docTitle}
+              </div>
+              {docSources.map((source, sourceIndex) => {
+                // Trích xuất thông tin từ unit_path (format: "Document > Điều X > Khoản Y > Điểm Z")
+                // hoặc fallback về article_number/article_title cho data cũ
+                let displayText = '';
+                
+                if (source.unit_path) {
+                  // Format mới: trích xuất từ unit_path, chỉ lấy từ "Điều" trở đi
+                  const pathParts = source.unit_path.split(' > ');
+                  const dieuIndex = pathParts.findIndex(part => part.includes('Điều'));
+                  
+                  if (dieuIndex !== -1) {
+                    const relevantParts = pathParts.slice(dieuIndex);
+                    let displayParts = [relevantParts[0]]; // Điều X
+                    
+                    // Thêm Khoản nếu có và không phải N/A
+                    if (relevantParts.length >= 2 && !relevantParts[1].includes('N/A')) {
+                      displayParts.push(relevantParts[1]);
+                    }
+                    
+                    // Thêm Điểm nếu có và không phải N/A
+                    if (relevantParts.length >= 3 && !relevantParts[2].includes('N/A')) {
+                      displayParts.push(relevantParts[2]);
+                    }
+                    
+                    displayText = displayParts.join(' > ');
+                  } else {
+                    displayText = source.unit_path;
+                  }
+                } else if (source.article_number) {
+                  // Format cũ: fallback
+                  displayText = `Điều ${source.article_number}`;
+                  if (source.article_title) {
+                    displayText += `: ${source.article_title}`;
+                  }
+                } else {
+                  displayText = 'N/A';
+                }
+                
+                return (
+                  <div key={sourceIndex} style={{ marginTop: 2, marginLeft: 16, fontSize: '0.85em' }}>
+                    <Tag color="blue" size="small">{displayText}</Tag>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      );
+    };
+    
     switch (item.data_type) {
       case 'word_matching':
         return (
@@ -159,6 +233,7 @@ const DataLabeling = () => {
             <div className="output-text">
               <strong>Answer:</strong> {content.answer}
             </div>
+            {renderSources(content.sources)}
           </div>
         );
       case 'concept_understanding':
@@ -170,6 +245,7 @@ const DataLabeling = () => {
             <div className="output-text">
               <strong>Answer:</strong> {content.answer}
             </div>
+            {renderSources(content.sources)}
           </div>
         );
       case 'multi_paragraph_reading':
@@ -181,6 +257,7 @@ const DataLabeling = () => {
             <div className="output-text">
               <strong>Answer:</strong> {content.answer}
             </div>
+            {renderSources(content.sources)}
           </div>
         );
       case 'multi_hop_reasoning':
@@ -192,62 +269,19 @@ const DataLabeling = () => {
             <div className="output-text">
               <strong>Answer:</strong> {content.answer}
             </div>
+            {renderSources(content.sources)}
           </div>
         );
-      // Legacy support cho format cũ
-      case 'sft':
-        return (
-          <div className="data-item">
-            <div className="instruction-text">
-              <strong>Instruction:</strong> {content.instruction}
-            </div>
-            <div className="output-text">
-              <strong>Output:</strong> {content.output}
-            </div>
-          </div>
-        );
-      case 'cot':
-        return (
-          <div className="data-item">
-            <div className="instruction-text">
-              <strong>Instruction:</strong> {content.instruction}
-            </div>
-            <div>
-              <strong>Reasoning Steps:</strong>
-              <ol className="reasoning-steps">
-                {content.reasoning_steps?.map((step, idx) => (
-                  <li key={idx}>{step}</li>
-                ))}
-              </ol>
-            </div>
-            <div className="output-text">
-              <strong>Final Answer:</strong> {content.final_answer}
-            </div>
-          </div>
-        );
-      case 'rlhf':
-        return (
-          <div className="data-item">
-            <div className="instruction-text">
-              <strong>Prompt:</strong> {content.prompt}
-            </div>
-            <div className="response-comparison">
-              <div className="response-option">
-                <strong>Response A:</strong>
-                <p>{content.response_a}</p>
-              </div>
-              <div className="response-option">
-                <strong>Response B:</strong>
-                <p>{content.response_b}</p>
-              </div>
-            </div>
-            <div>
-              <strong>Preferred:</strong> <Tag color="green">Response {content.preferred}</Tag>
-            </div>
-          </div>
-        );
+
       default:
-        return <pre style={{whiteSpace: 'pre-wrap', wordWrap: 'break-word'}}>{JSON.stringify(content, null, 2)}</pre>;
+        return (
+          <div className="data-item">
+            <pre style={{whiteSpace: 'pre-wrap', wordWrap: 'break-word'}}>
+              {JSON.stringify(content, null, 2)}
+            </pre>
+            {renderSources(content.sources)}
+          </div>
+        );
     }
   };
 
@@ -300,55 +334,6 @@ const DataLabeling = () => {
             </Form.Item>
             <Form.Item name={['modified_content', 'answer']} label="Answer">
               <TextArea rows={4} defaultValue={content.answer} />
-            </Form.Item>
-          </div>
-        );
-      case 'sft':
-        return (
-          <div>
-            <Form.Item name={['modified_content', 'instruction']} label="Instruction">
-              <TextArea rows={2} defaultValue={content.instruction} />
-            </Form.Item>
-            <Form.Item name={['modified_content', 'output']} label="Output">
-              <TextArea rows={4} defaultValue={content.output} />
-            </Form.Item>
-          </div>
-        );
-      case 'cot':
-        return (
-          <div>
-            <Form.Item name={['modified_content', 'instruction']} label="Instruction">
-              <TextArea rows={2} defaultValue={content.instruction} />
-            </Form.Item>
-            <Form.Item name={['modified_content', 'reasoning_steps']} label="Reasoning Steps">
-              <TextArea 
-                rows={4} 
-                defaultValue={content.reasoning_steps?.join('\n')}
-                placeholder="Mỗi bước trên một dòng"
-              />
-            </Form.Item>
-            <Form.Item name={['modified_content', 'final_answer']} label="Final Answer">
-              <TextArea rows={2} defaultValue={content.final_answer} />
-            </Form.Item>
-          </div>
-        );
-      case 'rlhf':
-        return (
-          <div>
-            <Form.Item name={['modified_content', 'prompt']} label="Prompt">
-              <TextArea rows={2} defaultValue={content.prompt} />
-            </Form.Item>
-            <Form.Item name={['modified_content', 'response_a']} label="Response A">
-              <TextArea rows={3} defaultValue={content.response_a} />
-            </Form.Item>
-            <Form.Item name={['modified_content', 'response_b']} label="Response B">
-              <TextArea rows={3} defaultValue={content.response_b} />
-            </Form.Item>
-            <Form.Item name={['modified_content', 'preferred']} label="Preferred">
-              <Radio.Group defaultValue={content.preferred}>
-                <Radio value="A">Response A</Radio>
-                <Radio value="B">Response B</Radio>
-              </Radio.Group>
             </Form.Item>
           </div>
         );
@@ -599,10 +584,6 @@ const getDataTypeColor = (type) => {
     case 'concept_understanding': return 'purple';
     case 'multi_paragraph_reading': return 'orange';
     case 'multi_hop_reasoning': return 'red';
-    // Legacy support
-    case 'sft': return 'blue';
-    case 'cot': return 'purple';
-    case 'rlhf': return 'orange';
     default: return 'default';
   }
 };

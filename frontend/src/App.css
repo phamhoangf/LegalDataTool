@@ -37,6 +37,36 @@
   min-height: 100vh;
 }
 
+/* Fixed header */
+.ant-layout-header {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  z-index: 1001 !important;
+  width: 100% !important;
+}
+
+/* Fixed sidebar */
+.ant-layout-sider {
+  position: fixed !important;
+  height: calc(100vh - 64px) !important;
+  left: 0 !important;
+  top: 64px !important; /* Header height */
+  z-index: 1000 !important;
+  overflow-y: auto !important;
+}
+
+/* Adjust main layout to account for fixed header */
+.main-layout > .ant-layout {
+  margin-top: 64px !important; /* Header height */
+}
+
+/* Adjust content to account for fixed sidebar */
+.ant-layout-content {
+  margin-left: 250px !important; /* Sidebar width */
+}
+
 .header-title {
   color: white;
   margin: 0;

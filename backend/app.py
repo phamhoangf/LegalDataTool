@@ -7,7 +7,16 @@ import json
 import jsonlines
 from datetime import datetime
 from data_generator import DataGenerator
+from coverage_analyzer import CoverageAnalyzer
+from document_parsers import LegalDocumentParser
 from models import db, LegalTopic, LegalDocument, TopicDocument, GeneratedData, LabeledData
+from vanban_csv import VanBanCSVReader
+# Thêm xử lí các file
+from file_handler import process_file, validate_file_size, get_supported_formats
+# Phần đọc dữ liệu từ web
+import asyncio
+import aiohttp
+from bs4 import BeautifulSoup
 
 # Load .env file từ parent directory
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -20,9 +29,18 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 CORS(app)
 db.init_app(app)
 
-# Initialize data generator with Google API key
+# Initialize data generator with Google API key and similarity threshold
 google_api_key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
-data_generator = DataGenerator(api_key=google_api_key)
+data_generator = DataGenerator(api_key=google_api_key, similarity_threshold=0.75)
+
+# Initialize legal document parser
+legal_parser = LegalDocumentParser()
+
+# Initialize CSV reader
+vanban_csv = VanBanCSVReader(os.path.join(os.path.dirname(__file__), "..", "data", "van_ban_phap_luat_async.csv"))
+
+# Global variable để lưu coverage analyzer instances  
+coverage_analyzers = {}
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -85,7 +103,6 @@ def update_topic(topic_id):
     
     topic.name = data.get('name', topic.name)
     topic.description = data.get('description', topic.description)
-    topic.legal_text = data.get('legal_text', topic.legal_text)
     
     db.session.commit()
     
@@ -93,7 +110,7 @@ def update_topic(topic_id):
         'id': topic.id,
         'name': topic.name,
         'description': topic.description,
-        'legal_text': topic.legal_text,
+        'created_at': topic.created_at.isoformat(),
         'message': 'Chủ đề đã được cập nhật thành công'
     })
 
@@ -104,6 +121,12 @@ def delete_topic(topic_id):
     
     # Xóa tất cả dữ liệu liên quan
     TopicDocument.query.filter_by(topic_id=topic_id).delete()
+    
+    # Xóa labels trước, sau đó mới xóa generated data (để tránh orphaned labels)
+    generated_data_ids = [gd.id for gd in GeneratedData.query.filter_by(topic_id=topic_id).all()]
+    if generated_data_ids:
+        LabeledData.query.filter(LabeledData.generated_data_id.in_(generated_data_ids)).delete(synchronize_session=False)
+    
     GeneratedData.query.filter_by(topic_id=topic_id).delete()
     
     db.session.delete(topic)
@@ -113,6 +136,156 @@ def delete_topic(topic_id):
         'message': 'Chủ đề đã được xóa thành công'
     })
 
+#-----------------------------------------------------
+@app.route('/api/topics/<int:topic_id>/details', methods=['GET'])
+def get_topic_details(topic_id):
+    """Lấy chi tiết đầy đủ của chủ đề bao gồm nội dung tất cả documents"""
+    topic = LegalTopic.query.get_or_404(topic_id)
+    
+    # Lấy tất cả documents với nội dung đầy đủ
+    documents = db.session.query(LegalDocument).join(TopicDocument).filter(
+        TopicDocument.topic_id == topic_id
+    ).all()
+    
+    # Chuẩn bị dữ liệu documents với nội dung đầy đủ
+    full_documents = []
+    for doc in documents:
+        full_documents.append({
+            'id': doc.id,
+            'title': doc.title,
+            'content': doc.content,  # Nội dung đầy đủ
+            'document_type': doc.document_type,
+            'document_number': doc.document_number,
+            'uploaded_at': doc.uploaded_at.isoformat() if doc.uploaded_at else None,
+            'effective_date': doc.effective_date.isoformat() if doc.effective_date else None,
+            'source_url': doc.source_url
+        })
+    
+    return jsonify({
+        'id': topic.id,
+        'name': topic.name,
+        'description': topic.description,
+        'document_count': len(documents),
+        'documents': full_documents,
+        'created_at': topic.created_at.isoformat()
+    })
+
+@app.route('/api/documents/<int:document_id>/details', methods=['GET'])
+def get_document_details(document_id):
+    """Lấy chi tiết đầy đủ của tài liệu bao gồm nội dung hoàn chỉnh"""
+    document = LegalDocument.query.get_or_404(document_id)
+    
+    # Lấy các topic liên kết
+    topic_docs = TopicDocument.query.filter_by(document_id=document_id).all()
+    topics = []
+    for td in topic_docs:
+        topic = LegalTopic.query.get(td.topic_id)
+        if topic:
+            topics.append({
+                'id': topic.id,
+                'name': topic.name,
+                'description': topic.description
+            })
+    
+    return jsonify({
+        'id': document.id,
+        'title': document.title,
+        'content': document.content,  # Nội dung đầy đủ
+        'document_type': document.document_type,
+        'document_number': document.document_number,
+        'issued_date': document.issued_date.isoformat() if document.issued_date else None,
+        'effective_date': document.effective_date.isoformat() if document.effective_date else None,
+        'source_url': document.source_url,
+        'uploaded_at': document.uploaded_at.isoformat() if document.uploaded_at else None,
+        'updated_at': document.updated_at.isoformat() if document.updated_at else None,
+        'uploaded_by': document.uploaded_by,
+        'topics': topics
+    })
+# Xử lí với link vanbanphapluat.co
+TIMEOUT_SECONDS = 20
+MAX_CONCURRENT_REQUESTS = 15
+
+async def fetch_and_parse(session, url, semaphore):
+    """Tải và phân tích một trang văn bản duy nhất với nhiều selector fallback."""
+    async with semaphore:
+        try:
+            async with session.get(url, timeout=TIMEOUT_SECONDS) as response:
+                response.raise_for_status()
+                html = await response.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                # Fallback selector logic
+                selectors = [
+                    ('div', {'itemprop': 'articleBody'}),
+                    ('div', {'id': 'content'}),
+                    ('article', {}),
+                    ('div', {'class': 'main-content'}),
+                    ('div', {'class': 'content'}),
+                ]
+                for tag, attrs in selectors:
+                    found = soup.find(tag, attrs=attrs)
+                    if found and found.get_text(strip=True):
+                        return found.get_text(separator='\n', strip=True), None
+                # Nếu không tìm thấy, lấy toàn bộ body
+                body = soup.find('body')
+                if body and body.get_text(strip=True):
+                    return body.get_text(separator='\n', strip=True), "Đã lấy toàn bộ <body> do không tìm thấy selector đặc biệt."
+                return None, "Không tìm thấy nội dung phù hợp trên trang (đã thử nhiều selector)."
+        except Exception as e:
+            return None, f"Lỗi khi crawl: {str(e)}"
+@app.route('/api/crawl-law-document', methods=['POST'])
+def crawl_law_document():
+    """Crawl nội dung văn bản luật từ web, lưu thành document và liên kết với topic nếu có."""
+    data = request.get_json()
+    url = data.get('url')
+    topic_id = data.get('topic_id')
+    title = data.get('title')
+    if not url:
+        return jsonify({'error': 'Thiếu URL'}), 400
+    # Crawl nội dung (async)
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        content, crawl_note = loop.run_until_complete(fetch_law_content(url))
+    except Exception as e:
+        return jsonify({'error': f'Lỗi khi crawl: {str(e)}'}), 500
+    if not content:
+        return jsonify({'error': crawl_note or 'Không lấy được nội dung từ trang web'}), 400
+    # Lưu document
+    doc_title = title or url
+    document = LegalDocument(
+        title=doc_title,
+        content=content,
+        document_type='law',
+        uploaded_by='crawler'
+    )
+    db.session.add(document)
+    db.session.flush()  # Lấy document.id
+    # Liên kết với topic nếu có
+    if topic_id:
+        topic = LegalTopic.query.get(topic_id)
+        if topic:
+            topic_doc = TopicDocument(
+                topic_id=int(topic_id),
+                document_id=document.id,
+                relevance_score=1.0
+            )
+            db.session.add(topic_doc)
+    db.session.commit()
+    return jsonify({
+        'message': 'Đã crawl và lưu tài liệu thành công',
+        'document_id': document.id,
+        'title': document.title,
+        'note': crawl_note
+    })
+
+async def fetch_law_content(url):
+    """Hàm chính để crawl 1 URL, trả về (content, error)"""
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+    async with aiohttp.ClientSession() as session:
+        content, error = await fetch_and_parse(session, url, semaphore)
+        return content, error
+    
+#-------------------------------------------------------------------------
 @app.route('/api/documents', methods=['GET'])
 def get_documents():
     """Lấy danh sách tài liệu"""
@@ -131,6 +304,9 @@ def get_documents():
                     'name': topic.name
                 })
         
+        # Parse articles count from parsed_structure
+        articles_count = doc.articles_count or 0  # Use pre-calculated field
+
         result.append({
             'id': doc.id,
             'title': doc.title,
@@ -139,8 +315,51 @@ def get_documents():
             'document_number': doc.document_number,
             'uploaded_at': doc.uploaded_at.isoformat(),
             'created_at': doc.uploaded_at.isoformat(),
+            'articles_count': articles_count,
             'topics': topics
         })
+    
+    return jsonify(result)
+
+@app.route('/api/documents/<int:doc_id>', methods=['GET'])
+def get_document(doc_id):
+    """Lấy thông tin chi tiết tài liệu"""
+    doc = LegalDocument.query.get(doc_id)
+    if not doc:
+        return jsonify({'error': 'Document not found'}), 404
+    
+    # Lấy các topic liên kết
+    topic_docs = TopicDocument.query.filter_by(document_id=doc.id).all()
+    topics = []
+    for td in topic_docs:
+        topic = LegalTopic.query.get(td.topic_id)
+        if topic:
+            topics.append({
+                'id': topic.id,
+                'name': topic.name
+            })
+    
+    result = {
+        'id': doc.id,
+        'title': doc.title,
+        'content': doc.content,
+        'document_type': doc.document_type,
+        'document_number': doc.document_number,
+        'uploaded_at': doc.uploaded_at.isoformat(),
+        'created_at': doc.uploaded_at.isoformat(),
+        'topics': topics
+    }
+    
+    # Thêm parsed_structure nếu có
+    if doc.parsed_structure:
+        try:
+            import json
+            result['parsed_structure'] = json.loads(doc.parsed_structure)
+            result['parsed'] = True
+        except:
+            result['parsed'] = False
+    else:
+        result['parsed'] = False
     
     return jsonify(result)
 
@@ -149,12 +368,27 @@ def create_document():
     """Tạo tài liệu mới"""
     data = request.get_json()
     
+    # Parse document structure ngay khi tạo
+    parsed_structure = None
+    articles_count = 0
+    try:
+        print(f"🔄 Parsing document: {data['title']}")
+        structure = legal_parser.parse_document(data['title'], data['content'])
+        parsed_structure = json.dumps(structure, ensure_ascii=False)
+        # Calculate articles count for performance
+        articles_count = len(structure.get('articles', []))
+        print(f"✅ Document parsed successfully - {articles_count} điều")
+    except Exception as e:
+        print(f"⚠️ Parsing failed: {str(e)}")
+    
     document = LegalDocument(
         title=data['title'],
         content=data['content'],
+        parsed_structure=parsed_structure,
         document_type=data.get('document_type', 'law'),
         document_number=data.get('document_number', ''),
-        uploaded_by=data.get('uploaded_by', 'system')
+        uploaded_by=data.get('uploaded_by', 'system'),
+        articles_count=articles_count
     )
     
     db.session.add(document)
@@ -163,6 +397,7 @@ def create_document():
     return jsonify({
         'id': document.id,
         'title': document.title,
+        'parsed': parsed_structure is not None,
         'message': 'Tài liệu đã được tạo thành công'
     }), 201
 
@@ -200,12 +435,27 @@ def update_document(document_id):
     document = LegalDocument.query.get_or_404(document_id)
     data = request.get_json()
     
+    # Check if content is being updated to recalculate articles_count
+    content_updated = False
+    
     if 'title' in data:
         document.title = data['title']
     if 'content' in data:
         document.content = data['content']
+        content_updated = True
     if 'document_type' in data:
         document.document_type = data['document_type']
+    
+    # Recalculate articles_count if content was updated
+    if content_updated:
+        try:
+            structure = legal_parser.parse_document(document.title, document.content)
+            document.parsed_structure = json.dumps(structure, ensure_ascii=False)
+            document.articles_count = len(structure.get('articles', []))
+            print(f"✅ Document updated with {document.articles_count} điều")
+        except Exception as e:
+            print(f"⚠️ Parsing failed during update: {str(e)}")
+            document.articles_count = 0
     
     document.updated_at = datetime.utcnow()
     db.session.commit()
@@ -250,63 +500,235 @@ def unlink_document_from_topic(topic_id, document_id):
 @app.route('/api/documents/upload', methods=['POST'])
 def upload_document_file():
     """Upload file tài liệu mà không cần liên kết với chủ đề"""
-    if 'file' not in request.files:
-        return jsonify({'error': 'Không có file được tải lên'}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'Tên file không hợp lệ'}), 400
-    
-    title = request.form.get('title', file.filename)
-    document_type = request.form.get('document_type', 'law')
-    
-    # Đọc nội dung file
-    content = file.read().decode('utf-8', errors='ignore')
-    
-    # Tạo document
-    document = LegalDocument(
-        title=title,
-        content=content,
-        document_type=document_type
-    )
-    
-    db.session.add(document)
-    db.session.commit()
-    
-    return jsonify({
-        'id': document.id,
-        'title': document.title,
-        'message': 'Tài liệu đã được tải lên thành công'
-    }), 201
+    try:
+        print(f"📁 Upload request received. Files: {list(request.files.keys())}")
+        print(f"📝 Form data: {dict(request.form)}")
+        
+        if 'file' not in request.files:
+            print("❌ No file in request")
+            return jsonify({'error': 'Không có file được tải lên'}), 400
+
+        file = request.files['file']
+        print(f"📄 File: {file.filename}, size: {len(file.read())} bytes")
+        file.seek(0)  # Reset file pointer after reading size
+        
+        if file.filename == '':
+            print("❌ Empty filename")
+            return jsonify({'error': 'Tên file không hợp lệ'}), 400
+
+        title = request.form.get('title', file.filename)
+        document_type = request.form.get('document_type', 'law')
+        print(f"📋 Title: {title}, Type: {document_type}")
+
+        # Xử lý file đa định dạng
+        file_content = file.read()
+        print(f"🔄 Processing file, content length: {len(file_content)}")
+        result = process_file(file_content, file.filename)
+        print(f"📊 Process result: {result}")
+        
+        if not result.get('success'):
+            error_msg = result.get('error', 'Không thể xử lý file')
+            print(f"❌ Process file failed: {error_msg}")
+            return jsonify({'error': error_msg}), 400
+
+        content = result.get('content', '')
+        print(f"✅ Content extracted, length: {len(content)}")
+
+        # Parse document thành các units
+        articles_count = 0
+        try:
+            print(f"🔍 Parsing document structure...")
+            structure = legal_parser.parse_document(title, content)
+            parsed_structure = json.dumps(structure, ensure_ascii=False)
+            articles_count = len(structure.get('articles', []))
+            print(f"✅ Document parsed successfully - {articles_count} điều")
+        except Exception as e:
+            print(f"⚠️ Parse warning: {str(e)}")
+            parsed_structure = None
+
+        # Tạo document
+        document = LegalDocument(
+            title=title,
+            content=content,
+            document_type=document_type,
+            parsed_structure=parsed_structure,
+            articles_count=articles_count
+        )
+
+        db.session.add(document)
+        db.session.commit()
+        print(f"💾 Document saved with ID: {document.id}")
+
+        return jsonify({
+            'id': document.id,
+            'title': document.title,
+            'message': 'Tài liệu đã được tải lên và phân tích thành công',
+            'file_type': result.get('file_type'),
+            'metadata': result.get('metadata', {}),
+            'parsed': parsed_structure is not None
+        }), 201
+        
+    except Exception as e:
+        print(f"💥 Upload error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Lỗi server: {str(e)}'}), 500
+
+@app.route('/api/documents/reparse', methods=['POST'])
+def reparse_all_documents():
+    """Re-parse tất cả tài liệu hiện có với logic parser mới"""
+    try:
+        documents = LegalDocument.query.all()
+        updated_count = 0
+        failed_count = 0
+        
+        print(f"🔄 Bắt đầu re-parse {len(documents)} tài liệu...")
+        
+        for doc in documents:
+            try:
+                print(f"🔄 Re-parsing: {doc.title}")
+                
+                # Parse lại với logic mới
+                structure = legal_parser.parse_document(doc.title, doc.content)
+                doc.parsed_structure = json.dumps(structure, ensure_ascii=False)
+                
+                # Cập nhật articles_count
+                doc.articles_count = len(structure.get('articles', []))
+                
+                # Cập nhật thời gian
+                doc.updated_at = datetime.utcnow()
+                
+                updated_count += 1
+                print(f"✅ Re-parsed successfully: {doc.title} ({doc.articles_count} articles)")
+                
+            except Exception as e:
+                print(f"❌ Failed to re-parse {doc.title}: {str(e)}")
+                failed_count += 1
+                continue
+        
+        # Commit tất cả thay đổi
+        db.session.commit()
+        
+        print(f"🎉 Re-parse completed: {updated_count} success, {failed_count} failed")
+        
+        return jsonify({
+            'message': f'Re-parse hoàn thành',
+            'total_documents': len(documents),
+            'updated_count': updated_count,
+            'failed_count': failed_count,
+            'success_rate': f"{(updated_count / len(documents) * 100):.1f}%" if documents else "0%"
+        })
+        
+    except Exception as e:
+        print(f"❌ Re-parse failed: {str(e)}")
+        return jsonify({'error': f'Lỗi khi re-parse tài liệu: {str(e)}'}), 500
+
+@app.route('/api/topics/<int:topic_id>/documents/reparse', methods=['POST'])
+def reparse_topic_documents(topic_id):
+    """Re-parse tất cả tài liệu của một topic cụ thể"""
+    try:
+        # Kiểm tra topic tồn tại
+        topic = LegalTopic.query.get_or_404(topic_id)
+        
+        # Lấy tất cả documents của topic
+        documents = db.session.query(LegalDocument).join(TopicDocument).filter(
+            TopicDocument.topic_id == topic_id
+        ).all()
+        
+        if not documents:
+            return jsonify({'message': f'Topic "{topic.name}" chưa có tài liệu nào'}), 200
+        
+        updated_count = 0
+        failed_count = 0
+        
+        print(f"🔄 Bắt đầu re-parse {len(documents)} tài liệu của topic '{topic.name}'...")
+        
+        for doc in documents:
+            try:
+                print(f"🔄 Re-parsing: {doc.title}")
+                
+                # Parse lại với logic mới
+                structure = legal_parser.parse_document(doc.title, doc.content)
+                doc.parsed_structure = json.dumps(structure, ensure_ascii=False)
+                
+                # Cập nhật articles_count
+                doc.articles_count = len(structure.get('articles', []))
+                
+                # Cập nhật thời gian
+                doc.updated_at = datetime.utcnow()
+                
+                updated_count += 1
+                print(f"✅ Re-parsed successfully: {doc.title} ({doc.articles_count} articles)")
+                
+            except Exception as e:
+                print(f"❌ Failed to re-parse {doc.title}: {str(e)}")
+                failed_count += 1
+                continue
+        
+        # Commit tất cả thay đổi
+        db.session.commit()
+        
+        print(f"🎉 Topic re-parse completed: {updated_count} success, {failed_count} failed")
+        
+        return jsonify({
+            'message': f'Re-parse topic "{topic.name}" hoàn thành',
+            'topic_name': topic.name,
+            'total_documents': len(documents),
+            'updated_count': updated_count,
+            'failed_count': failed_count,
+            'success_rate': f"{(updated_count / len(documents) * 100):.1f}%" if documents else "0%"
+        })
+        
+    except Exception as e:
+        print(f"❌ Topic re-parse failed: {str(e)}")
+        return jsonify({'error': f'Lỗi khi re-parse tài liệu topic: {str(e)}'}), 500
 
 @app.route('/api/upload', methods=['POST'])
 def upload_legal_document():
     """Tải lên văn bản luật và liên kết với chủ đề"""
     if 'file' not in request.files:
         return jsonify({'error': 'Không có file được tải lên'}), 400
-    
+
     file = request.files['file']
     topic_id = request.form.get('topic_id')
     document_title = request.form.get('title', file.filename)
     document_type = request.form.get('document_type', 'law')
-    
+
     if file.filename == '':
         return jsonify({'error': 'Không có file được chọn'}), 400
-    
-    # Đọc nội dung file
-    content = file.read().decode('utf-8')
-    
+
+    # Xử lý file đa định dạng
+    file_content = file.read()
+    result = process_file(file_content, file.filename)
+    if not result.get('success'):
+        return jsonify({'error': result.get('error', 'Không thể xử lý file')}), 400
+
+    content = result.get('content', '')
+
+    # Parse document thành các units
+    articles_count = 0
+    try:
+        structure = legal_parser.parse_document(document_title, content)
+        parsed_structure = json.dumps(structure, ensure_ascii=False)
+        articles_count = len(structure.get('articles', []))
+        print(f"✅ Document parsed successfully - {articles_count} điều")
+    except Exception as e:
+        print(f"Parse warning: {str(e)}")
+        parsed_structure = None
+
     # Tạo document mới
     document = LegalDocument(
         title=document_title,
         content=content,
         document_type=document_type,
-        uploaded_by='user'
+        uploaded_by='user',
+        parsed_structure=parsed_structure,
+        articles_count=articles_count
     )
-    
+
     db.session.add(document)
     db.session.flush()  # Để có ID
-    
+
     # Liên kết với topic nếu có
     if topic_id:
         topic = LegalTopic.query.get(topic_id)
@@ -317,26 +739,44 @@ def upload_legal_document():
                 relevance_score=1.0
             )
             db.session.add(topic_doc)
-    
+
     db.session.commit()
-    
+
     return jsonify({
-        'message': 'File đã được tải lên và liên kết thành công',
+        'message': 'File đã được tải lên, phân tích và liên kết thành công',
         'document_id': document.id,
-        'content_length': len(content)
+        'file_type': result.get('file_type'),
+        'parsed': parsed_structure is not None,
+        'metadata': result.get('metadata', {})
     })
+
 
 @app.route('/api/generate', methods=['POST'])
 def generate_training_data():
-    """Sinh dữ liệu huấn luyện"""
+    """Sinh dữ liệu huấn luyện với 4 loại reasoning"""
     data = request.get_json()
     
     topic_id = data.get('topic_id')
-    data_type = data.get('data_type')  # 'sft', 'cot', 'rlhf'
+    data_type = data.get('data_type')
     num_samples = data.get('num_samples', 10)
+    llm_type = data.get('llm_type', 'gemini')  # Default to gemini
+    
+    # Validate data_type - chỉ chấp nhận 4 loại mới
+    valid_types = ['word_matching', 'concept_understanding', 'multi_paragraph_reading', 'multi_hop_reasoning']
+    valid_llm_types = ['gemini', 'huggingface']
     
     if not topic_id or not data_type:
         return jsonify({'error': 'Thiếu topic_id hoặc data_type'}), 400
+    
+    if data_type not in valid_types:
+        return jsonify({
+            'error': f'data_type không hợp lệ. Chỉ chấp nhận: {", ".join(valid_types)}'
+        }), 400
+    
+    if llm_type not in valid_llm_types:
+        return jsonify({
+            'error': f'llm_type không hợp lệ. Chỉ chấp nhận: {", ".join(valid_llm_types)}'
+        }), 400
     
     topic = LegalTopic.query.get(topic_id)
     if not topic:
@@ -350,57 +790,59 @@ def generate_training_data():
     if not documents:
         return jsonify({'error': 'Chủ đề chưa có tài liệu pháp luật nào'}), 400
     
-    # Kết hợp nội dung từ tất cả documents
-    combined_legal_text = '\n\n'.join([doc.content for doc in documents])
-    
     try:
-        # Sinh dữ liệu dựa trên loại reasoning
-        if data_type == 'word_matching':
-            generated_samples = data_generator.generate_word_matching_data(
-                combined_legal_text, topic.name, num_samples
-            )
-        elif data_type == 'concept_understanding':
-            generated_samples = data_generator.generate_concept_understanding_data(
-                combined_legal_text, topic.name, num_samples
-            )
-        elif data_type == 'multi_paragraph_reading':
-            generated_samples = data_generator.generate_multi_paragraph_reading_data(
-                combined_legal_text, topic.name, num_samples
-            )
-        elif data_type == 'multi_hop_reasoning':
-            generated_samples = data_generator.generate_multi_hop_reasoning_data(
-                combined_legal_text, topic.name, num_samples
-            )
-        # Backward compatibility với tên cũ
-        elif data_type == 'sft':
-            generated_samples = data_generator.generate_word_matching_data(
-                combined_legal_text, topic.name, num_samples
-            )
-        elif data_type == 'cot':
-            generated_samples = data_generator.generate_concept_understanding_data(
-                combined_legal_text, topic.name, num_samples
-            )
-        elif data_type == 'rlhf':
-            generated_samples = data_generator.generate_multi_hop_reasoning_data(
-                combined_legal_text, topic.name, num_samples
-            )
-        else:
-            return jsonify({'error': 'Loại dữ liệu không hợp lệ. Sử dụng: word_matching, concept_understanding, multi_paragraph_reading, multi_hop_reasoning'}), 400
+        # Cập nhật similarity corpus với câu hỏi hiện có
+        existing_data = GeneratedData.query.filter_by(topic_id=topic_id).all()
+        existing_questions = []
+        for item in existing_data:
+            existing_questions.append({
+                'id': item.id,
+                'data_type': item.data_type,
+                'content': item.content
+            })
         
-        # Lưu vào database
+        data_generator.update_similarity_corpus(existing_questions)
+        
+        # No need to initialize HuggingFace model - using HTTP API
+        if llm_type == 'huggingface':
+            print(f"🔗 Using HuggingFace model via HTTP API")
+        
+        # Sử dụng method mới với article-based generation
+        generated_samples = data_generator.generate_from_multiple_documents(
+            documents, topic.name, data_type, num_samples, llm_type
+        )
+        
+        # Lưu vào database với metadata chi tiết
         for sample in generated_samples:
+            # Extract metadata nếu có
+            metadata = sample.pop('metadata', {})
+            
             generated_data = GeneratedData(
                 topic_id=topic_id,
                 data_type=data_type,
-                content=json.dumps(sample, ensure_ascii=False)
+                content=json.dumps({
+                    **sample,
+                    'metadata': metadata
+                }, ensure_ascii=False)
             )
             db.session.add(generated_data)
         
         db.session.commit()
         
+        # Tạo summary về document distribution
+        document_summary = {}
+        for sample in generated_samples:
+            if 'metadata' in sample and 'source_document' in sample['metadata']:
+                doc_name = sample['metadata']['source_document']
+                document_summary[doc_name] = document_summary.get(doc_name, 0) + 1
+        
         return jsonify({
-            'message': f'Đã sinh {len(generated_samples)} mẫu dữ liệu {data_type.upper()}',
-            'samples': generated_samples
+            'message': f'Đã sinh {len(generated_samples)} mẫu dữ liệu {data_type} bằng {llm_type}',
+            'total_samples': len(generated_samples),
+            'llm_type': llm_type,
+            'document_distribution': document_summary,
+            'documents_used': [{'title': doc.title, 'id': doc.id} for doc in documents],
+            'samples': generated_samples[:5]  # Chỉ hiển thị 5 samples đầu để preview
         })
         
     except Exception as e:
@@ -415,7 +857,8 @@ def get_generated_data(topic_id):
     if data_type:
         query = query.filter_by(data_type=data_type)
     
-    data = query.all()
+    # Sắp xếp theo ID giảm dần để lấy dữ liệu mới nhất trước
+    data = query.order_by(GeneratedData.id.desc()).all()
     
     result = []
     for item in data:
@@ -535,6 +978,309 @@ def get_statistics():
         'data_type_distribution': dict(data_type_stats),
         'label_distribution': dict(label_stats)
     })
+
+@app.route('/api/topics/<int:topic_id>/coverage', methods=['POST'])
+def analyze_topic_coverage(topic_id):
+    """Phân tích độ bao phủ của bộ câu hỏi cho một chủ đề"""
+    try:
+        data = request.get_json()
+        unit_type = data.get('unit_type', 'sentence')  # sentence, paragraph
+        threshold = data.get('threshold', 0.3)
+        
+        # Validate unit_type
+        if unit_type not in ['sentence', 'paragraph']:
+            return jsonify({'error': 'unit_type phải là "sentence" hoặc "paragraph"'}), 400
+        
+        # Lấy topic và documents
+        topic = LegalTopic.query.get_or_404(topic_id)
+        documents = db.session.query(LegalDocument).join(TopicDocument).filter(
+            TopicDocument.topic_id == topic_id
+        ).all()
+        
+        if not documents:
+            return jsonify({'error': 'Không có document nào cho chủ đề này'}), 400
+        
+        # Chuẩn bị documents data
+        documents_data = []
+        for doc in documents:
+            documents_data.append({
+                'id': doc.id,
+                'title': doc.title,
+                'content': doc.content
+            })
+        
+        # Lấy câu hỏi đã sinh cho topic này
+        questions = GeneratedData.query.filter_by(topic_id=topic_id).all()
+        questions_data = []
+        for q in questions:
+            questions_data.append({
+                'id': q.id,
+                'data_type': q.data_type,
+                'content': q.content
+            })
+        
+        if not questions_data:
+            return jsonify({'error': 'Không có câu hỏi nào được sinh cho chủ đề này'}), 400
+        
+        # Phân tích coverage đồng bộ (đơn giản)
+        analyzer = CoverageAnalyzer(coverage_threshold=threshold)
+        coverage_analyzers[topic_id] = analyzer  # Lưu để có thể dừng
+        
+        analyzer.prepare_coverage_analysis(documents_data, questions_data, unit_type)
+        coverage_result = analyzer.analyze_coverage()
+        
+        # Cleanup analyzer sau khi xong
+        if topic_id in coverage_analyzers:
+            del coverage_analyzers[topic_id]
+        
+        doc_summary = analyzer.get_coverage_summary_by_document(coverage_result)
+        
+        # Thêm thông tin topic
+        coverage_result['topic_info'] = {
+            'id': topic.id,
+            'name': topic.name,
+            'description': topic.description
+        }
+        
+        coverage_result['document_summary'] = doc_summary
+        coverage_result['analysis_settings'] = {
+            'unit_type': unit_type,
+            'threshold': threshold,
+            'total_documents': len(documents_data),
+            'total_questions': len(questions_data)
+        }
+
+        return jsonify(coverage_result)
+    
+    except Exception as e:
+        return jsonify({'error': f'Lỗi phân tích coverage: {str(e)}'}), 500
+
+@app.route('/api/topics/<int:topic_id>/coverage/stop', methods=['POST'])
+def stop_coverage_analysis(topic_id):
+    """Dừng phân tích coverage cho topic cụ thể"""
+    try:
+        if topic_id in coverage_analyzers:
+            coverage_analyzers[topic_id].stop_analysis()
+            return jsonify({'message': f'Đã yêu cầu dừng phân tích coverage cho topic {topic_id}'})
+        else:
+            return jsonify({'error': 'Không tìm thấy phân tích coverage đang chạy cho topic này'}), 404
+    
+    except Exception as e:
+        return jsonify({'error': f'Lỗi dừng phân tích: {str(e)}'}), 500
+
+@app.route('/api/coverage/batch', methods=['POST'])
+def analyze_batch_coverage():
+    """Phân tích coverage cho nhiều topics cùng lúc"""
+    try:
+        data = request.get_json()
+        topic_ids = data.get('topic_ids', [])
+        unit_type = data.get('unit_type', 'sentence')
+        threshold = data.get('threshold', 0.3)
+        
+        if not topic_ids:
+            return jsonify({'error': 'Cần cung cấp danh sách topic_ids'}), 400
+        
+        results = {}
+        
+        for topic_id in topic_ids:
+            try:
+                topic = LegalTopic.query.get(topic_id)
+                if not topic:
+                    results[topic_id] = {'error': f'Topic {topic_id} không tồn tại'}
+                    continue
+                
+                documents = db.session.query(LegalDocument).join(TopicDocument).filter(
+                    TopicDocument.topic_id == topic_id
+                ).all()
+                
+                questions = GeneratedData.query.filter_by(topic_id=topic_id).all()
+                
+                if not documents or not questions:
+                    results[topic_id] = {
+                        'error': 'Không có đủ dữ liệu để phân tích',
+                        'documents_count': len(documents),
+                        'questions_count': len(questions)
+                    }
+                    continue
+                
+                # Phân tích coverage cho topic này
+                documents_data = [{'id': doc.id, 'title': doc.title, 'content': doc.content} for doc in documents]
+                questions_data = [{'id': q.id, 'data_type': q.data_type, 'content': q.content} for q in questions]
+                
+                analyzer = CoverageAnalyzer(coverage_threshold=threshold)
+                analyzer.prepare_coverage_analysis(documents_data, questions_data, unit_type)
+                coverage_result = analyzer.analyze_coverage()
+                
+                # Chỉ lưu summary, không lưu chi tiết units
+                results[topic_id] = {
+                    'topic_name': topic.name,
+                    'total_units': coverage_result['total_units'],
+                    'covered_units': coverage_result['covered_units'],
+                    'coverage_percentage': coverage_result['coverage_percentage'],
+                    'documents_count': len(documents),
+                    'questions_count': len(questions)
+                }
+                
+            except Exception as e:
+                results[topic_id] = {'error': f'Lỗi phân tích topic {topic_id}: {str(e)}'}
+        
+        return jsonify({
+            'analysis_settings': {
+                'unit_type': unit_type,
+                'threshold': threshold
+            },
+            'results': results
+        })
+    
+    except Exception as e:
+        return jsonify({'error': f'Lỗi phân tích batch coverage: {str(e)}'}), 500
+
+# ==================== CSV DOCUMENT MANAGEMENT ====================
+
+@app.route('/api/csv/search', methods=['GET'])
+def search_csv_documents():
+    """Tìm kiếm tài liệu trong CSV file"""
+    try:
+        search_query = request.args.get('q', '')
+        limit = int(request.args.get('limit', 20))
+        offset = int(request.args.get('offset', 0))
+        
+        # Tìm kiếm trong CSV
+        results = vanban_csv.search_documents(search_query, limit=limit, offset=offset)
+        
+        return jsonify({
+            'results': results,
+            'query': search_query,
+            'total': len(results),
+            'limit': limit,
+            'offset': offset
+        })
+    
+    except Exception as e:
+        return jsonify({'error': f'Lỗi tìm kiếm CSV: {str(e)}'}), 500
+
+@app.route('/api/csv/document/<int:document_index>', methods=['GET'])
+def get_csv_document_preview(document_index):
+    """Lấy preview tài liệu từ CSV"""
+    try:
+        doc_data = vanban_csv.get_document_content(document_index)
+        
+        if not doc_data:
+            return jsonify({'error': 'Không tìm thấy tài liệu'}), 404
+        
+        content = doc_data.get('content', '')
+        title = doc_data.get('title', 'Không có tiêu đề')
+        
+        # Trả về preview (1000 ký tự đầu) hoặc full content
+        full = request.args.get('full', 'false').lower() == 'true'
+        
+        if full:
+            return jsonify({
+                'index': document_index,
+                'title': title,
+                'content': content,
+                'content_length': len(content),
+                'so_hieu': doc_data.get('so_hieu', ''),
+                'url': doc_data.get('url', '')
+            })
+        else:
+            preview = content[:1000] + "..." if len(content) > 1000 else content
+            
+            return jsonify({
+                'index': document_index,
+                'title': title,
+                'preview': preview,
+                'full_length': len(content),
+                'has_more': len(content) > 1000,
+                'so_hieu': doc_data.get('so_hieu', ''),
+                'url': doc_data.get('url', '')
+            })
+    
+    except Exception as e:
+        return jsonify({'error': f'Lỗi lấy preview: {str(e)}'}), 500
+
+@app.route('/api/csv/import/<int:document_index>', methods=['POST'])
+def import_csv_document(document_index):
+    """Import tài liệu từ CSV vào database"""
+    try:
+        data = request.get_json() or {}
+        doc_data = vanban_csv.get_document_content(document_index)
+        
+        if not doc_data:
+            return jsonify({'error': 'Không tìm thấy tài liệu trong CSV'}), 404
+        
+        content = doc_data.get('content', '')
+        title = data.get('title') or doc_data.get('title', f'Tài liệu CSV {document_index}')
+        
+        # Kiểm tra trùng lặp
+        existing = LegalDocument.query.filter_by(title=title).first()
+        if existing:
+            return jsonify({
+                'error': 'Tài liệu đã tồn tại',
+                'existing_id': existing.id
+            }), 409
+        
+        # Parse document structure
+        parsed_structure = None
+        articles_count = 0
+        try:
+            print(f"🔄 Parsing imported CSV document: {title}")
+            structure = legal_parser.parse_document(title, content)
+            parsed_structure = json.dumps(structure, ensure_ascii=False)
+            # Calculate articles count for performance
+            articles_count = len(structure.get('articles', []))
+            print(f"✅ CSV document parsed successfully - {articles_count} điều")
+        except Exception as e:
+            print(f"⚠️ CSV parsing failed: {str(e)}")
+        
+        # Tạo document mới với đúng document_type
+        document = LegalDocument(
+            title=title,
+            content=content,
+            parsed_structure=parsed_structure,
+            document_type='law',  # Set đúng type cho văn bản pháp luật
+            document_number=doc_data.get('so_hieu', ''),
+            uploaded_by='csv_import',
+            articles_count=articles_count
+        )
+        
+        db.session.add(document)
+        db.session.commit()
+        
+        return jsonify({
+            'id': document.id,
+            'title': document.title,
+            'parsed': parsed_structure is not None,
+            'content_length': len(content),
+            'message': 'Tài liệu CSV đã được import thành công'
+        }), 201
+    
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Lỗi import tài liệu: {str(e)}'}), 500
+
+@app.route('/api/csv/stats', methods=['GET'])
+def get_csv_stats():
+    """Lấy thống kê về CSV file"""
+    try:
+        # Lấy thống kê cơ bản
+        stats = {
+            'csv_file_path': vanban_csv.csv_file_path,
+            'file_exists': os.path.exists(vanban_csv.csv_file_path),
+            'total_documents': 0,
+            'sample_titles': []
+        }
+        
+        if stats['file_exists']:
+            # Đọc một chunk nhỏ để lấy thống kê
+            chunk = next(vanban_csv._read_csv_chunks(chunk_size=100))
+            stats['total_documents'] = len(chunk)
+            stats['sample_titles'] = chunk['title'].head(10).tolist() if 'title' in chunk.columns else []
+        
+        return jsonify(stats)
+    
+    except Exception as e:
+        return jsonify({'error': f'Lỗi lấy thống kê CSV: {str(e)}'}), 500
 
 if __name__ == '__main__':
     with app.app_context():

@@ -14,7 +14,8 @@ import {
   Popconfirm,
   Tooltip,
   Select,
-  Typography
+  Typography,
+  Tabs
 } from 'antd';
 import {
   PlusOutlined,
@@ -26,6 +27,7 @@ import {
   LinkOutlined
 } from '@ant-design/icons';
 import apiService from '../services/api';
+import VanBanDropdown from './VanBanDropdown';
 
 const { TextArea } = Input;
 const { Dragger } = Upload;
@@ -37,7 +39,9 @@ const DocumentManagement = () => {
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editModalVisible, setEditModalVisible] = useState(false);
+  const [detailModalVisible, setDetailModalVisible] = useState(false);
   const [linkModalVisible, setLinkModalVisible] = useState(false);
+  const [searchText, setSearchText] = useState('');
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [form] = Form.useForm();
   const [editForm] = Form.useForm();
@@ -52,7 +56,6 @@ const DocumentManagement = () => {
     try {
       setLoading(true);
       const response = await apiService.getDocuments();
-      console.log('Documents loaded:', response.data);
       setDocuments(response.data);
     } catch (error) {
       message.error('Không thể tải danh sách tài liệu');
@@ -104,6 +107,38 @@ const DocumentManagement = () => {
       message.error('Không thể xóa tài liệu');
     }
   };
+  // Xem chi tiết văn bản 
+  const showDocumentDetails = async (document) => {
+    try {
+      setLoading(true);
+      // Lấy chi tiết đầy đủ của document
+      const response = await apiService.getDocumentDetails(document.id);
+      setSelectedDocument({
+        ...document,
+        fullContent: response.data.content || document.content,
+        topics: response.data.topics || document.topics || []
+      });
+      setSearchText('');
+      setDetailModalVisible(true);
+    } catch (error) {
+      // Fallback nếu API không có endpoint getDocumentDetails
+      setSelectedDocument({
+        ...document,
+        fullContent: document.content,
+        topics: document.topics || []
+      });
+      setSearchText('');
+      setDetailModalVisible(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const highlightSearchText = (text, searchText) => {
+    if (!searchText || !text) return text;
+    const regex = new RegExp(`(${searchText})`, 'gi');
+    return text.replace(regex, '<mark style="background-color: #ffeb3b;">$1</mark>');
+  };
 
   const handleUploadDocument = async (file) => {
     const formData = new FormData();
@@ -141,13 +176,13 @@ const DocumentManagement = () => {
   const uploadProps = {
     name: 'file',
     multiple: false,
-    accept: '.txt,.pdf,.doc,.docx',
+    accept: '.txt,.pdf,.docx',
     beforeUpload: (file) => {
       handleUploadDocument(file);
       return false; // Prevent default upload
     },
     onDrop(e) {
-      console.log('Dropped files', e.dataTransfer.files);
+      // Handle file drop for upload
     },
   };
 
@@ -156,17 +191,28 @@ const DocumentManagement = () => {
       title: 'Tiêu Đề',
       dataIndex: 'title',
       key: 'title',
-      render: (text) => <strong>{text}</strong>,
+      render: (text, record) => (
+        <div>
+          <strong style={{ display: 'block', marginBottom: 4 }}>{text}</strong>
+          {(record.articles_count || 0) > 0 && (
+            <Tag size="small" color="blue">{record.articles_count} điều</Tag>
+          )}
+        </div>
+      ),
     },
     {
       title: 'Loại Tài Liệu',
       dataIndex: 'document_type',
       key: 'document_type',
-      render: (type) => (
-        <Tag color={type === 'law' ? 'blue' : 'green'}>
-          {type === 'law' ? 'Văn bản pháp luật' : 'Tài liệu khác'}
-        </Tag>
-      ),
+      render: (type, record) => {
+        // Tất cả document từ CSV đều là văn bản pháp luật
+        const isLaw = type === 'law' || type === 'legal_document' || record.uploaded_by === 'csv_import';
+        return (
+          <Tag color={isLaw ? 'blue' : 'green'}>
+            {isLaw ? 'Văn bản pháp luật' : 'Tài liệu khác'}
+          </Tag>
+        );
+      },
     },
     {
       title: 'Độ Dài',
@@ -228,49 +274,52 @@ const DocumentManagement = () => {
             <Button
               icon={<EyeOutlined />}
               size="small"
-              onClick={() => {
-                Modal.info({
-                  title: `Chi tiết: ${record.title}`,
-                  width: 800,
-                  content: (
-                    <div>
-                      <p><strong>Loại:</strong> {record.document_type === 'law' ? 'Văn bản pháp luật' : 'Tài liệu khác'}</p>
-                      <p><strong>Độ dài:</strong> {record.content ? record.content.length.toLocaleString() : 0} ký tự</p>
+              // onClick={() => {
+              //   Modal.info({
+              //     title: `Chi tiết: ${record.title}`,
+              //     width: 800,
+              //     content: (
+              //       <div>
+              //         <p><strong>Loại:</strong> {record.document_type === 'law' || record.document_type === 'legal_document' || record.uploaded_by === 'csv_import' ? 'Văn bản pháp luật' : 'Tài liệu khác'}</p>
+              //         <p><strong>Độ dài:</strong> {record.content ? record.content.length.toLocaleString() : 0} ký tự</p>
+              //         <p><strong>Số lượng điều:</strong> <Tag color={record.articles_count > 0 ? 'green' : 'default'}>{record.articles_count || 0} điều</Tag></p>
                       
-                      {record.topics && record.topics.length > 0 && (
-                        <div>
-                          <Divider orientation="left">Chủ đề liên kết</Divider>
-                          <div style={{ marginBottom: 16 }}>
-                            {record.topics.map(topic => (
-                              <Tag key={topic.id} color="purple" style={{ marginBottom: 4 }}>
-                                {topic.name}
-                              </Tag>
-                            ))}
-                          </div>
-                        </div>
-                      )}
+              //         {record.topics && record.topics.length > 0 && (
+              //           <div>
+              //             <Divider orientation="left">Chủ đề liên kết</Divider>
+              //             <div style={{ marginBottom: 16 }}>
+              //               {record.topics.map(topic => (
+              //                 <Tag key={topic.id} color="purple" style={{ marginBottom: 4 }}>
+              //                   {topic.name}
+              //                 </Tag>
+              //               ))}
+              //             </div>
+              //           </div>
+              //         )}
                       
-                      {record.content && (
-                        <div>
-                          <Divider orientation="left">Nội dung tài liệu</Divider>
-                          <div style={{ 
-                            maxHeight: 400, 
-                            overflow: 'auto',
-                            background: '#f5f5f5',
-                            padding: 12,
-                            borderRadius: 4,
-                            fontSize: '13px',
-                            lineHeight: '1.6'
-                          }}>
-                            {record.content.substring(0, 3000)}
-                            {record.content.length > 3000 && '...'}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ),
-                });
-              }}
+              //         {record.content && (
+              //           <div>
+              //             <Divider orientation="left">Nội dung tài liệu</Divider>
+              //             <div style={{ 
+              //               maxHeight: 400, 
+              //               overflow: 'auto',
+              //               background: '#f5f5f5',
+              //               padding: 12,
+              //               borderRadius: 4,
+              //               fontSize: '13px',
+              //               lineHeight: '1.4',
+              //               whiteSpace: 'pre-wrap'
+              //             }}>
+              //               {record.content.substring(0, 3000)}
+              //               {record.content.length > 3000 && '...'}
+              //             </div>
+              //           </div>
+              //         )}
+              //       </div>
+              //     ),
+              //   });
+              // }}
+              onClick={() => showDocumentDetails(record)}
             />
           </Tooltip>
           
@@ -338,7 +387,7 @@ const DocumentManagement = () => {
               icon={<PlusOutlined />}
               onClick={() => setModalVisible(true)}
             >
-              Tạo Tài Liệu Mới
+              Thêm Tài Liệu
             </Button>
           </Space>
         }
@@ -369,65 +418,89 @@ const DocumentManagement = () => {
 
       {/* Modal tạo tài liệu mới */}
       <Modal
-        title="Tạo Tài Liệu Mới"
+        title="Thêm Tài Liệu"
         open={modalVisible}
         onCancel={() => {
           setModalVisible(false);
           form.resetFields();
         }}
         footer={null}
-        width={700}
+        width={800}
       >
-        <Form
-          form={form}
-          layout="vertical"
-          onFinish={handleCreateDocument}
-        >
-          <Form.Item
-            name="title"
-            label="Tiêu Đề Tài Liệu"
-            rules={[{ required: true, message: 'Vui lòng nhập tiêu đề!' }]}
-          >
-            <Input placeholder="VD: Luật Giao thông đường bộ 2008 - Điều 60" />
-          </Form.Item>
+        <Tabs
+          defaultActiveKey="csv"
+          items={[
+            {
+              key: 'csv',
+              label: 'Chọn từ danh sách có sẵn',
+              children: (
+                <VanBanDropdown 
+                  onDocumentImported={(newDoc) => {
+                    loadDocuments(); // Reload để lấy dữ liệu mới nhất
+                    setModalVisible(false);
+                    message.success('Tài liệu đã được thêm thành công!');
+                  }}
+                />
+              )
+            },
+            {
+              key: 'manual',
+              label: 'Tạo thủ công',
+              children: (
+                <Form
+                  form={form}
+                  layout="vertical"
+                  onFinish={handleCreateDocument}
+                >
+                  <Form.Item
+                    name="title"
+                    label="Tiêu Đề Tài Liệu"
+                    rules={[{ required: true, message: 'Vui lòng nhập tiêu đề!' }]}
+                  >
+                    <Input placeholder="VD: Luật Giao thông đường bộ 2008 - Điều 60" />
+                  </Form.Item>
 
-          <Form.Item
-            name="document_type"
-            label="Loại Tài Liệu"
-            rules={[{ required: true, message: 'Vui lòng chọn loại tài liệu!' }]}
-            initialValue="law"
-          >
-            <Select>
-              <Select.Option value="law">Văn bản pháp luật</Select.Option>
-              <Select.Option value="other">Tài liệu khác</Select.Option>
-            </Select>
-          </Form.Item>
+                  <Form.Item
+                    name="document_type"
+                    label="Loại Tài Liệu"
+                    rules={[{ required: true, message: 'Vui lòng chọn loại tài liệu!' }]}
+                    initialValue="law"
+                  >
+                    <Select>
+                      <Select.Option value="law">Văn bản pháp luật</Select.Option>
+                      <Select.Option value="other">Tài liệu khác</Select.Option>
+                    </Select>
+                  </Form.Item>
 
-          <Form.Item
-            name="content"
-            label="Nội Dung Tài Liệu"
-            rules={[{ required: true, message: 'Vui lòng nhập nội dung!' }]}
-          >
-            <TextArea
-              rows={10}
-              placeholder="Paste nội dung tài liệu vào đây..."
-            />
-          </Form.Item>
+                  <Form.Item
+                    name="content"
+                    label="Nội Dung Tài Liệu"
+                    rules={[{ required: true, message: 'Vui lòng nhập nội dung!' }]}
+                  >
+                    <TextArea
+                      rows={10}
+                      placeholder="Paste nội dung tài liệu vào đây..."
+                    />
+                  </Form.Item>
 
-          <Form.Item>
-            <Space>
-              <Button type="primary" htmlType="submit">
-                Tạo Tài Liệu
-              </Button>
-              <Button onClick={() => {
-                setModalVisible(false);
-                form.resetFields();
-              }}>
-                Hủy
-              </Button>
-            </Space>
-          </Form.Item>
-        </Form>
+                  <Form.Item>
+                    <Space>
+                      <Button type="primary" htmlType="submit">
+                        Tạo Tài Liệu
+                      </Button>
+                      <Button onClick={() => {
+                        setModalVisible(false);
+                        form.resetFields();
+                      }}>
+                        Hủy
+                      </Button>
+                    </Space>
+                  </Form.Item>
+                </Form>
+              )
+            }
+          ]}
+        />
       </Modal>
 
       {/* Modal chỉnh sửa tài liệu */}
@@ -545,8 +618,218 @@ const DocumentManagement = () => {
           </Form.Item>
         </Form>
       </Modal>
+      {/* Modal chi tiết tài liệu cải tiến */}
+      <Modal
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: 40 }}>
+            <span>📄 Chi tiết tài liệu: {selectedDocument?.title}</span>
+            <Input.Search
+              placeholder="Tìm kiếm trong nội dung..."
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              style={{ width: 300, marginRight: 10 }}
+            />
+          </div>
+        }
+        open={detailModalVisible}
+        onCancel={() => setDetailModalVisible(false)}
+        width="60%"
+        style={{ top: 60, paddingBottom: 0 }}
+        bodyStyle={{ maxHeight: 'calc(100vh - 200px)', overflow: 'hidden' }}
+        footer={[
+          <Button key="close" onClick={() => setDetailModalVisible(false)}>
+            Đóng
+          </Button>
+        ]}
+      >
+        {selectedDocument && (
+          <div>
+            {/* Thông tin metadata */}
+            <div style={{ 
+              background: '#f0f2f5', 
+              padding: 16, 
+              borderRadius: 8,
+              marginBottom: 16 
+            }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 12 }}>
+                <div>
+                  <Text strong>📋 Tiêu đề:</Text>
+                  <br />
+                  <Text>{selectedDocument.title}</Text>
+                </div>
+                <div>
+                  <Text strong>📂 Loại tài liệu:</Text>
+                  <br />
+                  <Tag color={selectedDocument.document_type === 'law' ? 'blue' : 'green'}>
+                    {selectedDocument.document_type === 'law' ? 'Văn bản pháp luật' : 'Tài liệu khác'}
+                  </Tag>
+                </div>
+                {/* Hiển thị số chương, mục, điều nếu có */}
+                {selectedDocument.num_chapter && (
+                  <div>
+                    <Text strong>📚 Số chương:</Text>
+                    <br />
+                    <Text>{selectedDocument.num_chapter}</Text>
+                  </div>
+                )}
+                {selectedDocument.num_section && (
+                  <div>
+                    <Text strong>📑 Số mục:</Text>
+                    <br />
+                    <Text>{selectedDocument.num_section}</Text>
+                  </div>
+                )}
+                {selectedDocument.num_article && (
+                  <div>
+                    <Text strong>� Số điều:</Text>
+                    <br />
+                    <Text>{selectedDocument.num_article}</Text>
+                  </div>
+                )}
+                {selectedDocument.num_chunk && (
+                  <div>
+                    <Text strong>🔹 Số chunk:</Text>
+                    <br />
+                    <Text>{selectedDocument.num_chunk}</Text>
+                  </div>
+                )}
+                {selectedDocument.chunks && Array.isArray(selectedDocument.chunks) && (
+                  <div>
+                    <Text strong>📄 Số điều:</Text>
+                    <br />
+                    <Text>{selectedDocument.chunks.length}</Text>
+                  </div>
+                )}
+                {/* Nếu không có thông tin trên, fallback về số ký tự */}
+                {!selectedDocument.num_chapter && !selectedDocument.num_section && !selectedDocument.num_article && !selectedDocument.num_chunk && !selectedDocument.chunks && (
+                  <div>
+                    <Text strong>�📏 Độ dài:</Text>
+                    <br />
+                    <Text>{selectedDocument.fullContent?.length?.toLocaleString() || 0} ký tự</Text>
+                  </div>
+                )}
+                <div>
+                  <Text strong>⏰ Ngày tải lên:</Text>
+                  <br />
+                  <Text>
+                    {selectedDocument.uploaded_at 
+                      ? new Date(selectedDocument.uploaded_at).toLocaleString('vi-VN')
+                      : 'Không rõ'
+                    }
+                  </Text>
+                </div>
+              </div>
+
+              {/* Thông tin bổ sung */}
+              <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 12 }}>
+                {selectedDocument.document_number && (
+                  <div>
+                    <Text strong>🔢 Số hiệu:</Text>
+                    <br />
+                    <Text>{selectedDocument.document_number}</Text>
+                  </div>
+                )}
+                {selectedDocument.effective_date && (
+                  <div>
+                    <Text strong>📅 Ngày hiệu lực:</Text>
+                    <br />
+                    <Text>{new Date(selectedDocument.effective_date).toLocaleDateString('vi-VN')}</Text>
+                  </div>
+                )}
+                {selectedDocument.source_url && (
+                  <div>
+                    <Text strong>🔗 Nguồn:</Text>
+                    <br />
+                    <a href={selectedDocument.source_url} target="_blank" rel="noopener noreferrer">
+                      {selectedDocument.source_url}
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Chủ đề liên kết */}
+            {selectedDocument.topics && selectedDocument.topics.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <Text strong>🏷️ Chủ đề liên kết:</Text>
+                <div style={{ marginTop: 8 }}>
+                  {selectedDocument.topics.map(topic => (
+                    <Tag key={topic.id} color="purple" style={{ marginBottom: 4 }}>
+                      {topic.name}
+                    </Tag>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Nội dung tài liệu */}
+            {selectedDocument.fullContent ? (
+              <div>
+                <Text strong>📝 Nội dung tài liệu:</Text>
+                <div style={{ 
+                  background: '#fafafa',
+                  border: '1px solid #d9d9d9',
+                  borderRadius: 8,
+                  marginTop: 8,
+                  maxHeight: '50vh',
+                  overflow: 'auto'
+                }}>
+                  <div style={{ 
+                    padding: 16,
+                    fontSize: '14px',
+                    lineHeight: '1.6',
+                    fontFamily: 'monospace'
+                  }}>
+                    <div
+                      dangerouslySetInnerHTML={{
+                        __html: highlightSearchText(selectedDocument.fullContent, searchText)
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Thống kê nội dung */}
+                <div style={{ 
+                  marginTop: 12,
+                  padding: 12,
+                  background: '#e6f7ff',
+                  borderRadius: 6,
+                  fontSize: '12px'
+                }}>
+                  <Space>
+                    <Text>📊 Thống kê:</Text>
+                    <Text>{selectedDocument.fullContent.split(' ').filter(word => word.trim()).length} từ</Text>
+                    <Text>{selectedDocument.fullContent.split('\n').length} dòng</Text>
+                    <Text>{selectedDocument.fullContent.split(/[.!?]+/).filter(s => s.trim()).length} câu</Text>
+                    {searchText && (
+                      <Text style={{ color: '#1890ff' }}>
+                        {(selectedDocument.fullContent.match(new RegExp(searchText, 'gi')) || []).length} kết quả tìm kiếm
+                      </Text>
+                    )}
+                  </Space>
+                </div>
+              </div>
+            ) : (
+              <div style={{ 
+                textAlign: 'center', 
+                padding: 60,
+                background: '#fafafa',
+                borderRadius: 8,
+                color: '#999' 
+              }}>
+                <FileTextOutlined style={{ fontSize: 48, marginBottom: 16 }} />
+                <p style={{ fontSize: 16, marginBottom: 8 }}>Không có nội dung</p>
+                <p style={{ fontSize: 14 }}>
+                  Tài liệu này không có nội dung để hiển thị
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 };
+
 
 export default DocumentManagement;

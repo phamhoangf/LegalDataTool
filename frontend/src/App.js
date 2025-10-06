@@ -52,7 +52,7 @@ function App() {
     {
       key: '/label',
       icon: <TagsOutlined />,
-      label: 'Gán nhãn',
+      label: 'Duyệt dữ liệu',
     },
     {
       key: '/stats',

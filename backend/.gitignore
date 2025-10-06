@@ -1,0 +1,38 @@
+# Test và Debug files - không commit
+test_*.py
+debug_*.py
+check_*.py
+quick_test.py
+*_test.py
+*.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+
+# Instance folder (database)
+instance/*.db
+instance/*.sqlite
+
+# Development summaries (có thể bỏ sau khi stable)
+*_SUMMARY.md
+*_COMPLETE.md

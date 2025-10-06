@@ -27,7 +27,8 @@ const DataGeneration = () => {
   const [topics, setTopics] = useState([]);
   const [selectedTopic, setSelectedTopic] = useState(null);
   const [dataType, setDataType] = useState('word_matching');
-  const [numSamples, setNumSamples] = useState(10);
+  const [llmType, setLlmType] = useState('gemini');
+  const [numSamples, setNumSamples] = useState(3);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [generatedData, setGeneratedData] = useState([]);
@@ -89,7 +90,8 @@ const DataGeneration = () => {
       const response = await apiService.generateData({
         topic_id: selectedTopic,
         data_type: dataType,
-        num_samples: numSamples
+        num_samples: numSamples,
+        llm_type: llmType
       });
 
       message.success(response.data.message);
@@ -107,44 +109,25 @@ const DataGeneration = () => {
         return {
           title: 'Word Matching',
           description: 'Câu hỏi đơn giản có thể trả lời bằng tìm kiếm từ khóa trực tiếp trong văn bản',
-          example: 'Question: "Độ tuổi tối thiểu để thi GPLX hạng A1 là bao nhiêu?"\nAnswer: "18 tuổi"\nEvidence: "Điều 60: Hạng A1: đủ 18 tuổi"'
+          example: 'Question: "Độ tuổi tối thiểu để thi GPLX hạng A1 là bao nhiêu?"\nAnswer: "18 tuổi"'
         };
       case 'concept_understanding':
         return {
           title: 'Concept Understanding',
           description: 'Yêu cầu hiểu ý nghĩa các khái niệm và thuật ngữ pháp lý để trả lời',
-          example: 'Question: "Thế nào là vi phạm về GPLX?"\nAnswer: "Vi phạm bao gồm lái xe khi không có GPLX, GPLX hết hạn..."\nConcepts: ["vi phạm", "GPLX", "hành vi bị cấm"]'
+          example: 'Question: "Thế nào là vi phạm về GPLX?"\nAnswer: "Vi phạm bao gồm lái xe khi không có GPLX, GPLX hết hạn..."'
         };
       case 'multi_paragraph_reading':
         return {
           title: 'Multi-Paragraph Reading',
           description: 'Cần đọc và tổng hợp thông tin từ nhiều đoạn văn khác nhau',
-          example: 'Question: "Quy trình cấp đổi GPLX như thế nào?"\nAnswer: "Gồm 3 bước: nộp hồ sơ, kiểm tra, cấp mới"\nParagraphs: ["Điều về hồ sơ", "Điều về kiểm tra", "Điều về cấp phát"]'
+          example: 'Question: "Quy trình cấp đổi GPLX như thế nào?"\nAnswer: "Gồm 3 bước: nộp hồ sơ, kiểm tra, cấp mới"'
         };
       case 'multi_hop_reasoning':
         return {
           title: 'Multi-Hop Reasoning',
           description: 'Phức tạp nhất, cần nhiều bước suy luận logic liên tiếp để trả lời',
-          example: 'Question: "Người nước ngoài muốn lái xe tại VN cần làm gì?"\nReasoning: ["Xác định loại GPLX", "Kiểm tra hiệp định", "Thủ tục chuyển đổi", "Điều kiện cư trú"]\nAnswer: "Tùy thuộc vào quốc tịch và loại GPLX..."'
-        };
-      // Backward compatibility
-      case 'sft':
-        return {
-          title: 'SFT (Word Matching)',
-          description: 'Tạo cặp instruction-output đơn giản (tương đương Word Matching)',
-          example: 'Instruction: "Thời hạn GPLX hạng A1 là bao lâu?"\nOutput: "Theo Thông tư 12/2017, GPLX hạng A1 có giá trị không thời hạn."'
-        };
-      case 'cot':
-        return {
-          title: 'CoT (Concept Understanding)',
-          description: 'Tạo dữ liệu với hiểu biết khái niệm (tương đương Concept Understanding)',
-          example: 'Instruction: "Người 17 tuổi có được thi GPLX không?"\nConcepts: Độ tuổi tối thiểu\nAnswer: "Không"'
-        };
-      case 'rlhf':
-        return {
-          title: 'RLHF (Multi-Hop Reasoning)',
-          description: 'Tạo dữ liệu phức tạp (tương đương Multi-Hop Reasoning)',
-          example: 'Prompt: "Tư vấn thủ tục đổi GPLX"\nReasoning: Nhiều bước\nAnswer: Kết luận'
+          example: 'Question: "Người nước ngoài muốn lái xe tại VN cần làm gì?"\nAnswer: "Tùy thuộc vào quốc tịch và loại GPLX..."'
         };
       default:
         return { title: '', description: '', example: '' };
@@ -154,16 +137,92 @@ const DataGeneration = () => {
   const renderDataPreview = (item) => {
     const content = typeof item.content === 'string' ? JSON.parse(item.content) : item.content;
     
-    // Hiển thị format đơn giản: chỉ 3 trường (question, answer, difficulty)
+    // Render sources information nếu có với support cho multiple documents
+    const renderSources = (sources) => {
+      if (!sources || !Array.isArray(sources) || sources.length === 0) {
+        return null;
+      }
+      
+      // Group sources by document
+      const sourcesByDoc = sources.reduce((acc, source) => {
+        const docTitle = source.document_title;
+        if (!acc[docTitle]) {
+          acc[docTitle] = [];
+        }
+        acc[docTitle].push(source);
+        return acc;
+      }, {});
+      
+      return (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: '0.9em', color: '#666', marginBottom: 4 }}>
+            📚 Nguồn ({sources.length} điều):
+          </div>
+          {Object.entries(sourcesByDoc).map(([docTitle, docSources], docIndex) => (
+            <div key={docIndex} style={{ marginBottom: 4 }}>
+              <div style={{ fontSize: '0.8em', color: '#888', fontWeight: '500' }}>
+                📄 {docTitle}
+              </div>
+              {docSources.map((source, sourceIndex) => {
+                // Trích xuất thông tin từ unit_path (format: "Document > Điều X > Khoản Y > Điểm Z")
+                // hoặc fallback về article_number/article_title cho data cũ
+                let displayText = '';
+                
+                if (source.unit_path) {
+                  // Format mới: chỉ hiển thị từ "Điều" trở đi
+                  const pathParts = source.unit_path.split(' > ');
+                  
+                  // Tìm phần có "Điều" để bắt đầu hiển thị từ đó
+                  let startIndex = pathParts.findIndex(part => part.includes('Điều'));
+                  if (startIndex === -1) startIndex = 0; // Fallback nếu không tìm thấy "Điều"
+                  
+                  let displayParts = [];
+                  
+                  // Thêm phần Điều
+                  if (startIndex < pathParts.length) {
+                    displayParts.push(pathParts[startIndex]);
+                  }
+                  
+                  // Thêm Khoản nếu có và không phải N/A
+                  if (startIndex + 1 < pathParts.length && !pathParts[startIndex + 1].includes('N/A')) {
+                    displayParts.push(pathParts[startIndex + 1]);
+                  }
+                  
+                  // Thêm Điểm nếu có và không phải N/A
+                  if (startIndex + 2 < pathParts.length && !pathParts[startIndex + 2].includes('N/A')) {
+                    displayParts.push(pathParts[startIndex + 2]);
+                  }
+                  
+                  displayText = displayParts.length > 0 ? displayParts.join(' > ') : source.unit_path;
+                } else if (source.article_number) {
+                  // Format cũ: fallback
+                  displayText = `Điều ${source.article_number}`;
+                  if (source.article_title) {
+                    displayText += `: ${source.article_title}`;
+                  }
+                } else {
+                  displayText = 'N/A';
+                }
+                
+                return (
+                  <div key={sourceIndex} style={{ marginLeft: 12, marginBottom: 2 }}>
+                    <Tag color="volcano" size="small">{displayText}</Tag>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      );
+    };
+    
+    // Hiển thị format đơn giản với sources và metadata
     const getColorByType = (type) => {
       switch (type) {
         case 'word_matching': return 'blue';
         case 'concept_understanding': return 'green';
         case 'multi_paragraph_reading': return 'orange';
         case 'multi_hop_reasoning': return 'red';
-        case 'sft': return 'blue';
-        case 'cot': return 'green';
-        case 'rlhf': return 'red';
         default: return 'default';
       }
     };
@@ -174,9 +233,6 @@ const DataGeneration = () => {
         case 'concept_understanding': return 'Concept Understanding';
         case 'multi_paragraph_reading': return 'Multi-Paragraph Reading';
         case 'multi_hop_reasoning': return 'Multi-Hop Reasoning';
-        case 'sft': return 'SFT (Legacy)';
-        case 'cot': return 'CoT (Legacy)';
-        case 'rlhf': return 'RLHF (Legacy)';
         default: return type;
       }
     };
@@ -188,6 +244,7 @@ const DataGeneration = () => {
         <Tag color={getColorByType(item.data_type)}>
           {content.difficulty || 'Unknown'} - {getDisplayType(item.data_type)}
         </Tag>
+        {renderSources(content.sources)}
       </div>
     );
   };
@@ -300,6 +357,36 @@ const DataGeneration = () => {
             </Radio.Group>
           </div>
 
+          {/* Model LLM */}
+          <div>
+            <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>
+              🤖 Model AI:
+            </label>
+            <Radio.Group
+              value={llmType}
+              onChange={(e) => setLlmType(e.target.value)}
+              style={{ width: '100%' }}
+            >
+              <Space direction="vertical">
+                <Radio value="gemini">
+                  <strong>Gemini 2.5 Flash</strong> - Google AI (Nhanh, ổn định)
+                  <div style={{ fontSize: '12px', color: '#666', marginLeft: 20 }}>
+                    API cloud, phù hợp với việc sinh dữ liệu với chất lượng cao
+                  </div>
+                </Radio>
+                <Radio value="huggingface">
+                  <strong>Qwen3-4B Generate Data</strong> - Model tùy chỉnh
+                  <div style={{ fontSize: '12px', color: '#666', marginLeft: 20 }}>
+                    Model được fine-tune cho dữ liệu pháp luật Việt Nam
+                  </div>
+                  {/* <div style={{ fontSize: '11px', color: '#ff6b6b', marginLeft: 20 }}>
+                    Cần GPU
+                  </div> */}
+                </Radio>
+              </Space>
+            </Radio.Group>
+          </div>
+
           {/* Số lượng mẫu */}
           <div>
             <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>
@@ -400,9 +487,10 @@ const DataGeneration = () => {
 
 const getDataTypeColor = (type) => {
   switch (type) {
-    case 'sft': return 'blue';
-    case 'cot': return 'purple';
-    case 'rlhf': return 'orange';
+    case 'word_matching': return 'blue';
+    case 'concept_understanding': return 'green';
+    case 'multi_paragraph_reading': return 'purple';
+    case 'multi_hop_reasoning': return 'orange';
     default: return 'default';
   }
 };

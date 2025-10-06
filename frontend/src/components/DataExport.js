@@ -22,12 +22,10 @@ import {
 } from '@ant-design/icons';
 import apiService from '../services/api';
 
-const { Option } = Select;
-
-const DataExport = () => {
+const { Option } = Select;const DataExport = () => {
   const [topics, setTopics] = useState([]);
   const [selectedTopic, setSelectedTopic] = useState(null);
-  const [dataType, setDataType] = useState('sft');
+  const [dataType, setDataType] = useState('word_matching');
   const [dataPreview, setDataPreview] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -113,33 +111,56 @@ const DataExport = () => {
   const renderPreviewContent = (item) => {
     const content = typeof item.content === 'string' ? JSON.parse(item.content) : item.content;
     
+    const truncateText = (text, maxLength = 100) => {
+      return text && text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
+    };
+    
     switch (item.data_type) {
-      case 'sft':
+      case 'word_matching':
         return (
-          <div>
-            <strong>Instruction:</strong> {content.instruction}<br />
-            <strong>Output:</strong> {content.output}
+          <div style={{ maxWidth: '400px', wordWrap: 'break-word' }}>
+            <strong>Câu hỏi:</strong> {truncateText(content.question, 80)}<br />
+            <strong>Câu trả lời:</strong> {truncateText(content.answer, 80)}<br />
+            {content.metadata?.source_document && (
+              <><strong>Nguồn:</strong> {truncateText(content.metadata.source_document, 50)}<br /></>
+            )}
           </div>
         );
-      case 'cot':
+      case 'concept_understanding':
         return (
-          <div>
-            <strong>Instruction:</strong> {content.instruction}<br />
-            <strong>Steps:</strong> {content.reasoning_steps?.join(' → ')}<br />
-            <strong>Answer:</strong> {content.final_answer}
+          <div style={{ maxWidth: '400px', wordWrap: 'break-word' }}>
+            <strong>Câu hỏi:</strong> {truncateText(content.question, 80)}<br />
+            <strong>Câu trả lời:</strong> {truncateText(content.answer, 80)}<br />
+            <strong>Giải thích:</strong> {truncateText(content.explanation, 60)}<br />
+            {content.metadata?.source_documents && (
+              <><strong>Nguồn:</strong> {truncateText(content.metadata.source_documents.join(', '), 50)}<br /></>
+            )}
           </div>
         );
-      case 'rlhf':
+      case 'multi_paragraph_reading':
         return (
-          <div>
-            <strong>Prompt:</strong> {content.prompt}<br />
-            <strong>Response A:</strong> {content.response_a?.substring(0, 100)}...<br />
-            <strong>Response B:</strong> {content.response_b?.substring(0, 100)}...<br />
-            <strong>Preferred:</strong> {content.preferred}
+          <div style={{ maxWidth: '400px', wordWrap: 'break-word' }}>
+            <strong>Câu hỏi:</strong> {truncateText(content.question, 80)}<br />
+            <strong>Câu trả lời:</strong> {truncateText(content.answer, 80)}<br />
+            <strong>Lý do:</strong> {truncateText(content.reasoning, 60)}<br />
+            {content.metadata?.source_documents && (
+              <><strong>Nguồn:</strong> {truncateText(content.metadata.source_documents.join(', '), 50)}<br /></>
+            )}
+          </div>
+        );
+      case 'multi_hop_reasoning':
+        return (
+          <div style={{ maxWidth: '400px', wordWrap: 'break-word' }}>
+            <strong>Câu hỏi:</strong> {truncateText(content.question, 80)}<br />
+            <strong>Câu trả lời:</strong> {truncateText(content.answer, 80)}<br />
+            <strong>Các bước:</strong> {truncateText(content.reasoning_steps?.join(' → '), 60)}<br />
+            {content.metadata?.source_documents && (
+              <><strong>Nguồn:</strong> {truncateText(content.metadata.source_documents.join(', '), 50)}<br /></>
+            )}
           </div>
         );
       default:
-        return JSON.stringify(content);
+        return <div style={{ maxWidth: '400px', wordWrap: 'break-word' }}>{truncateText(JSON.stringify(content), 100)}</div>;
     }
   };
 
@@ -266,9 +287,10 @@ const DataExport = () => {
                   value={dataType}
                   onChange={setDataType}
                 >
-                  <Option value="sft">SFT - Supervised Fine-Tuning</Option>
-                  <Option value="cot">CoT - Chain-of-Thought</Option>
-                  <Option value="rlhf">RLHF - Human Feedback</Option>
+                  <Option value="word_matching">Word Matching - Khớp từ khóa</Option>
+                  <Option value="concept_understanding">Concept Understanding - Hiểu khái niệm</Option>
+                  <Option value="multi_paragraph_reading">Multi Paragraph Reading - Đọc hiểu đa đoạn</Option>
+                  <Option value="multi_hop_reasoning">Multi Hop Reasoning - Suy luận đa bước</Option>
                 </Select>
               </div>
             </Col>
@@ -362,22 +384,60 @@ const DataExport = () => {
       {/* Hướng dẫn sử dụng */}
       <Card title="Hướng Dẫn Sử Dụng File Xuất" style={{ marginTop: 24 }}>
         <div>
-          <h4>Định dạng SFT:</h4>
-          <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 4 }}>
-{`{"instruction": "Câu hỏi", "output": "Câu trả lời"}
-{"instruction": "Câu hỏi khác", "output": "Câu trả lời khác"}`}
+          <h4>Định dạng Word Matching:</h4>
+          <pre style={{ 
+            background: '#f5f5f5', 
+            padding: 12, 
+            borderRadius: 4,
+            overflowX: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordWrap: 'break-word',
+            fontSize: '12px'
+          }}>
+{`{"question": "Độ tuổi tối thiểu để lái xe ô tô là bao nhiêu?", "answer": "18 tuổi", "metadata": {"source_document": "Luật Giao thông"}}
+{"question": "Ai có thể cấp giấy phép lái xe?", "answer": "Cơ quan có thẩm quyền", "metadata": {"source_document": "Nghị định 12"}}`}
           </pre>
 
-          <h4>Định dạng CoT:</h4>
-          <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 4 }}>
-{`{"instruction": "Câu hỏi", "reasoning_steps": ["Bước 1", "Bước 2"], "final_answer": "Kết luận"}
-{"instruction": "Câu hỏi khác", "reasoning_steps": ["Bước A", "Bước B"], "final_answer": "Kết luận khác"}`}
+          <h4>Định dạng Concept Understanding:</h4>
+          <pre style={{ 
+            background: '#f5f5f5', 
+            padding: 12, 
+            borderRadius: 4,
+            overflowX: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordWrap: 'break-word',
+            fontSize: '12px'
+          }}>
+{`{"question": "Khái niệm giao thông đường bộ là gì?", "answer": "Hoạt động di chuyển người, hàng hóa bằng phương tiện giao thông", "explanation": "Định nghĩa chi tiết về giao thông đường bộ", "metadata": {"source_documents": ["Luật Giao thông", "Nghị định 12"]}}
+{"question": "Nguyên tắc cấp giấy phép lái xe?", "answer": "Đúng tuổi, đủ sức khỏe, có kiến thức", "explanation": "Giải thích về các điều kiện cấp phép", "metadata": {"source_documents": ["Luật Giao thông"]}}`}
           </pre>
 
-          <h4>Định dạng RLHF:</h4>
-          <pre style={{ background: '#f5f5f5', padding: 12, borderRadius: 4 }}>
-{`{"prompt": "Câu hỏi", "response_a": "Phản hồi A", "response_b": "Phản hồi B", "preferred": "A"}
-{"prompt": "Câu hỏi khác", "response_a": "Phản hồi A", "response_b": "Phản hồi B", "preferred": "B"}`}
+          <h4>Định dạng Multi Paragraph Reading:</h4>
+          <pre style={{ 
+            background: '#f5f5f5', 
+            padding: 12, 
+            borderRadius: 4,
+            overflowX: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordWrap: 'break-word',
+            fontSize: '12px'
+          }}>
+{`{"question": "So sánh điều kiện cấp GPLX hạng A và hạng B", "answer": "Hạng A: từ 16 tuổi, Hạng B: từ 18 tuổi", "reasoning": "Dựa vào nhiều điều luật khác nhau", "metadata": {"source_documents": ["Luật Giao thông", "Nghị định 12", "Thông tư 58"]}}
+{"question": "Quy trình đào tạo và sát hạch lái xe", "answer": "Đào tạo lý thuyết → thực hành → sát hạch", "reasoning": "Tổng hợp từ các quy định về đào tạo", "metadata": {"source_documents": ["Nghị định 12", "Thông tư 58"]}}`}
+          </pre>
+
+          <h4>Định dạng Multi Hop Reasoning:</h4>
+          <pre style={{ 
+            background: '#f5f5f5', 
+            padding: 12, 
+            borderRadius: 4,
+            overflowX: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordWrap: 'break-word',
+            fontSize: '12px'
+          }}>
+{`{"question": "Một người 17 tuổi muốn lái xe cần làm gì?", "answer": "Chờ đủ 18 tuổi hoặc học hạng A1", "reasoning_steps": ["Kiểm tra độ tuổi", "Xem loại xe muốn lái", "Tìm quy định phù hợp"], "metadata": {"source_documents": ["Luật Giao thông", "Nghị định 12", "Thông tư 58"]}}
+{"question": "Chi phí và thời gian hoàn tất giấy phép lái xe B1", "answer": "Khoảng 3-6 tháng, chi phí 8-12 triệu", "reasoning_steps": ["Tính thời gian đào tạo", "Cộng thời gian chờ sát hạch", "Tổng hợp chi phí các khâu"], "metadata": {"source_documents": ["Nghị định 12", "Thông tư 58", "Quyết định phí"]}}`}
           </pre>
 
           <Divider />
@@ -385,17 +445,31 @@ const DataExport = () => {
           <Alert
             message="Sử dụng với Python"
             description={
-              <pre style={{ margin: 0 }}>
+              <pre style={{ 
+                margin: 0,
+                overflowX: 'auto',
+                whiteSpace: 'pre-wrap',
+                wordWrap: 'break-word',
+                fontSize: '12px'
+              }}>
 {`import jsonlines
 
-# Đọc file JSONL
-with jsonlines.open('sft_data.jsonl') as reader:
+# Đọc file JSONL cho Word Matching
+with jsonlines.open('word_matching_data.jsonl') as reader:
     for obj in reader:
-        print(obj['instruction'], obj['output'])
+        print(f"Q: {obj['question']}")
+        print(f"A: {obj['answer']}")
+        
+# Đọc file JSONL cho Multi Hop Reasoning  
+with jsonlines.open('multi_hop_reasoning_data.jsonl') as reader:
+    for obj in reader:
+        print(f"Q: {obj['question']}")
+        print(f"Steps: {' → '.join(obj['reasoning_steps'])}")
+        print(f"A: {obj['answer']}")
 
 # Hoặc với pandas
 import pandas as pd
-df = pd.read_json('sft_data.jsonl', lines=True)`}
+df = pd.read_json('word_matching_data.jsonl', lines=True)`}
               </pre>
             }
             type="info"
@@ -408,9 +482,10 @@ df = pd.read_json('sft_data.jsonl', lines=True)`}
 
 const getDataTypeColor = (type) => {
   switch (type) {
-    case 'sft': return 'blue';
-    case 'cot': return 'purple';
-    case 'rlhf': return 'orange';
+    case 'word_matching': return 'blue';
+    case 'concept_understanding': return 'green';
+    case 'multi_paragraph_reading': return 'purple';
+    case 'multi_hop_reasoning': return 'orange';
     default: return 'default';
   }
 };
